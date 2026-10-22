@@ -263,7 +263,7 @@ function Load-Result {
     try {
         $r = Call-Api -Method GET -Url "https://api.github.com/repos/$Repo/contents/results/$Id.json" -Headers (Get-GhHeaders) -TimeoutSec 30
         $script:Sha[$Id] = [string]$r.Json.sha
-        $bytes = [Convert]::FromBase64String(([string]$r.Json.content) -replace '\s', '')
+        $bytes = [Convert]::FromBase64String((([string]$r.Json.content) -replace '\s', ''))
         return (Read-Json ($Utf8.GetString($bytes)))
     } catch { if ([int]$_.Exception.Data['http'] -eq 404) { return $null }; throw }
 }
@@ -696,7 +696,7 @@ function Get-ScheduleSnapshot {
         if (-not $c -or $c.sha -ne $sha) {
             try {
                 $r = Call-ApiRead -Url "https://api.github.com/repos/$Repo/contents/schedules/$nm" -Headers (Get-GhHeaders)
-                $bytes = [Convert]::FromBase64String(([string]$r.Json['content']) -replace '\s', '')
+                $bytes = [Convert]::FromBase64String((([string]$r.Json['content']) -replace '\s', ''))
                 $s = Read-Json ($Utf8.GetString($bytes).TrimStart([char]0xFEFF))
             } catch { Write-Msg ('읽지 못한 예약 파일: ' + $nm); continue }
             $c = @{ sha = $sha; sch = $s }
