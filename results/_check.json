@@ -1,0 +1,27 @@
+{
+  "kind": "check",
+  "ok": true,
+  "checkedAt": "2026-10-22T17:30:00Z",
+  "secretsPresent": {
+    "INSTAGRAM_TOKEN": true,
+    "THREADS_TOKEN": true,
+    "INSTAGRAM_USER_ID": false,
+    "THREADS_USER_ID": false
+  },
+  "accounts": {
+    "instagram": {
+      "ok": true,
+      "message": "OK (@monggeul.town)"
+    },
+    "threads": {
+      "ok": true,
+      "message": "OK (@monggeul.town)"
+    }
+  },
+  "repo": {
+    "ok": true,
+    "message": "OK"
+  },
+  "mock": false,
+  "updatedAt": "2026-10-22T17:30:00Z"
+}
