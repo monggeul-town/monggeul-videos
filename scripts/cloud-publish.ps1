@@ -1,17 +1,30 @@
-﻿# 요약: 클라우드(GitHub Actions) 예약 게시 일꾼. 5분마다 깨어나 "시각이 된 예약"을 인스타 릴스 -> 스레드 순서로 올린다.
+﻿# 요약: 클라우드(GitHub Actions) 예약 게시 일꾼. 깨어나 "시각이 된 예약"을 인스타 릴스 -> 스레드 순서로 올린다.
 #       (PC의 09_도구\자동게시.ps1 과 같은 순서·같은 API. 모양만 클라우드용으로 단순화)
+#       -Wait(5분 간격 실행에서 켜짐): 앞으로 3시간 안에 시각이 되는 예약이 있으면 끝내지 않고 기다렸다가 그 시각(약 20초 전 시작 -> 정각 게시)에 올린다.
+#       기다리는 동안 예약 파일을 1~2분마다 다시 읽어 취소·시간 변경을 반영하고, 결과 파일에 "waiting"(심장박동 5분마다)을 적어 다른 실행이 건너뛰게 한다.
 # 놓는 곳: 보관함(monggeul-videos)의 scripts/cloud-publish.ps1  (PowerShell 5.1 / 7 모두 동작)
-# 인자: -Mode run(기본, 올리기) | check(읽기 전용 점검) / -Mock -RepoDir 폴더 (모의: 인터넷 요청 없이 폴더 안 파일로만 시험)
+# 인자: -Mode run(기본, 올리기) | check(읽기 전용 점검) / -Wait / -Mock -RepoDir 폴더 (모의: 인터넷 요청 없이 폴더 안 파일로만 시험)
 # 열쇠(Secrets)는 환경변수로만 받는다: INSTAGRAM_TOKEN THREADS_TOKEN INSTAGRAM_USER_ID THREADS_USER_ID (+ 자동 제공 GITHUB_TOKEN, GITHUB_REPOSITORY)
 # 규칙: 비밀 값은 어디에도 출력·저장하지 않는다. 이 파일은 UTF-8 BOM 필수.
+# PowerShell 7 주의(2026-10-22 사고): ConvertFrom-Json 이 날짜처럼 생긴 글자를 DateTime 으로 바꾼다 -> JSON을 읽는 곳은 모두 Read-Json/ConvertTo-Hash 를 거쳐
+#       날짜를 다시 글자로 되돌린다(ConvertTo-Hash). 날짜 계산은 ConvertTo-Utc 로만 한다. (모의 시험은 -SimPs7 로 PS7 동작을 흉내)
 param(
     [string]$Mode = 'run',
     [switch]$Mock,
     [string]$RepoDir = '',
     [string]$FailAt = '',
-    [string]$NowUtc = ''      # 모의 시험 전용: 지금 시각을 흉내 (예: 2026-10-22T13:00:00)
+    [string]$NowUtc = '',     # 모의 시험 전용: 지금 시각을 흉내 (예: 2026-10-22T13:00:00). 모의에서는 기다리는 시간도 "가상 시계"로 흘러간다
+    [switch]$Wait,            # 앞으로 WaitWindowMin 분 안의 예약을 미리 와서 기다림
+    [string]$RunId = '',
+    [switch]$SimPs7,          # 모의 시험 전용: PowerShell 7 의 날짜 자동 변환을 흉내
+    [string]$MockEvents = '', # 모의 시험 전용: 기다리는 동안 일어날 일(취소·시간 변경·끊김·예약 추가)을 적은 JSON 파일
+    [int]$WaitWindowMin = 180,
+    [int]$DeadlineMin = 185,  # 이 실행이 "새로 기다리기 시작"할 수 있는 한도(시작 후 분). 워크플로 제한시간(240분)보다 충분히 짧게
+    [int]$PollSec = 90,
+    [int]$LeadSec = 20        # 인스타 컨테이너 준비(약 20초)를 감안해 이만큼 먼저 시작 -> 게시가 정각 무렵
 )
 $ErrorActionPreference = 'Stop'
+if (-not $RunId) { $RunId = $(if ($env:GITHUB_RUN_ID) { $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT } else { [guid]::NewGuid().ToString('N').Substring(0, 8) }) }
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
 $LateLimitMin = 60
@@ -36,7 +49,56 @@ $script:MockCount = @{}
 $script:Sha = @{}
 
 # ---------- 도우미 ----------
-function Get-Now { if ($NowUtc) { return [datetime]::SpecifyKind([datetime]::Parse($NowUtc), 'Utc') } else { return [datetime]::UtcNow } }
+$script:ClockBase = $null; $script:Virt = 0.0
+$script:Mine = @{}        # 내가 "waiting" 표시를 해 둔 예약: id -> @{ attempt; hbAt }
+$script:Finished = @{}    # 이 실행에서 더는 볼 필요 없는 예약 (id|attempt)
+$script:NoWait = @{}      # 기다리지 않기로 한 예약 (id|attempt)
+$script:SchCache = @{}    # 보관함 예약 파일 읽기 캐시 (파일 이름 -> @{ sha; sch })
+$script:Events = @()
+function Get-Now {
+    if ($Mock) {
+        # 모의: 가상 시계 (기다리면 시간이 흐른 것으로 친다 - 실제로는 기다리지 않음)
+        if (-not $script:ClockBase) { $script:ClockBase = $(if ($NowUtc) { [datetime]::SpecifyKind([datetime]::Parse($NowUtc, [System.Globalization.CultureInfo]::InvariantCulture), 'Utc') } else { [datetime]::UtcNow }) }
+        return $script:ClockBase.AddSeconds($script:Virt)
+    }
+    return [datetime]::UtcNow
+}
+# 어떤 모양(글자·DateTime·+0900 등)이든 UTC 시각으로. 못 읽으면 $null  (PS7 이 JSON 날짜를 DateTime 으로 바꿔도 안전)
+function ConvertTo-Utc {
+    param($V)
+    if ($null -eq $V -or [string]$V -eq '') { return $null }
+    try {
+        if ($V -is [datetime]) { if ($V.Kind -eq 'Unspecified') { return [datetime]::SpecifyKind($V, 'Utc') }; return $V.ToUniversalTime() }
+        $t = [regex]::Replace(([string]$V).Trim(), '([+-])(\d\d)(\d\d)$', '$1$2:$3')
+        return ([datetimeoffset]::Parse($t, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal)).UtcDateTime
+    } catch { return $null }
+}
+# DateTime 이 JSON 에서 들어왔을 때 글자로 되돌림: 시간대 없는 값(한국시간 예약 등)은 그대로, 시간대 있던 값은 UTC 'Z' 글자
+function Format-DateValue {
+    param([datetime]$D)
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    if ($D.Kind -eq 'Unspecified') { return $D.ToString('yyyy-MM-ddTHH:mm:ss', $inv) }
+    return $D.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss', $inv) + 'Z'
+}
+# 모의 시험용: PowerShell 7 의 ConvertFrom-Json 이 날짜 모양 글자를 DateTime 으로 바꾸는 것을 흉내 (Z/오프셋 있으면 Local 종류, 없으면 종류 없음)
+function Sim-Ps7 {
+    param($Obj)
+    if ($null -eq $Obj) { return $null }
+    if ($Obj -is [System.Management.Automation.PSCustomObject]) {
+        foreach ($p in @($Obj.PSObject.Properties)) { $p.Value = (Sim-Ps7 $p.Value) }
+        return $Obj
+    }
+    if ($Obj -is [System.Array]) { return , @($Obj | ForEach-Object { Sim-Ps7 $_ }) }
+    if ($Obj -is [string] -and $Obj -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$') {
+        $inv = [System.Globalization.CultureInfo]::InvariantCulture
+        if ($Obj -match '(Z|[+-]\d{2}:?\d{2})$') {
+            $t = [regex]::Replace($Obj, '([+-])(\d\d)(\d\d)$', '$1$2:$3')
+            return ([datetimeoffset]::Parse($t, $inv)).LocalDateTime
+        }
+        return [datetime]::Parse($Obj, $inv)
+    }
+    return $Obj
+}
 function Hide-Secrets {
     param([string]$Text)
     if ([string]::IsNullOrEmpty($Text)) { return $Text }
@@ -49,6 +111,7 @@ function Hide-Secrets {
 function ConvertTo-Hash {
     param($Obj)
     if ($null -eq $Obj) { return $null }
+    if ($Obj -is [datetime]) { return (Format-DateValue $Obj) }     # PS7: 날짜로 바뀐 값을 다시 글자로
     if ($Obj -is [System.Management.Automation.PSCustomObject]) {
         $h = [ordered]@{}
         foreach ($p in $Obj.PSObject.Properties) { $h[$p.Name] = ConvertTo-Hash $p.Value }
@@ -57,7 +120,14 @@ function ConvertTo-Hash {
     if ($Obj -is [System.Array]) { return @($Obj | ForEach-Object { ConvertTo-Hash $_ }) }
     return $Obj
 }
-function Read-Json { param([string]$Text) if ([string]::IsNullOrWhiteSpace($Text)) { return $null }; return (ConvertTo-Hash (ConvertFrom-Json $Text)) }
+# JSON 글 -> 해시. 날짜는 항상 글자 (PS5.1 / PS7 같은 결과)
+function Read-Json {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    $o = ConvertFrom-Json $Text
+    if ($SimPs7) { $o = Sim-Ps7 $o }
+    return (ConvertTo-Hash $o)
+}
 function Write-Msg { param([string]$M) $line = '[' + (Get-Now).ToString('HH:mm:ss') + 'Z] ' + (Hide-Secrets $M); Write-Host $line }
 function New-Err {
     param([string]$Message, [string]$Code = '', [int]$Http = 0)
@@ -65,7 +135,27 @@ function New-Err {
     $ex.Data['code'] = $Code; $ex.Data['http'] = $Http
     return $ex
 }
-function Wait-Sec { param([int]$S) if ($Mock) { Start-Sleep -Milliseconds 50 } else { Start-Sleep -Seconds $S } }
+function Wait-Sec {
+    param([int]$S)
+    if ($Mock) { $script:Virt += $S; Start-Sleep -Milliseconds 5; Apply-MockEvents } else { Start-Sleep -Seconds $S }
+}
+# 모의 시험 전용: 가상 시간이 흐르다가 정해 둔 때가 되면 보관함 예약 파일을 바꾼다(PC 쪽에서 취소·시간 변경·예약 추가를 한 것처럼) 또는 실행을 갑자기 끊는다
+function Apply-MockEvents {
+    foreach ($e in $script:Events) {
+        if ($e['done']) { continue }
+        if ($script:Virt -lt [double]$e['atSec']) { continue }
+        $e['done'] = $true
+        $act = [string]$e['action']
+        $pth = Join-Path $SchedDir ([string]$e['id'] + '.json')
+        if ($act -eq 'kill') { Write-Msg '[모의] 실행이 갑자기 끊김'; exit 77 }
+        if ($act -eq 'add') { if (-not (Test-Path -LiteralPath $SchedDir)) { New-Item -ItemType Directory -Force -Path $SchedDir | Out-Null }; [System.IO.File]::WriteAllText((Join-Path $SchedDir ([string]$e['schedule']['id'] + '.json')), ($e['schedule'] | ConvertTo-Json -Depth 10), $Utf8); Write-Msg ('[모의] 예약 추가 ' + [string]$e['schedule']['id']); continue }
+        $cur = Read-Json ([System.IO.File]::ReadAllText($pth, $Utf8))
+        if ($act -eq 'cancel') { $cur['status'] = 'cancelled' }
+        if ($act -eq 'retime') { $cur['scheduledAt'] = [string]$e['newWhen']; $cur['status'] = 'scheduled'; $cur['attempt'] = $(if ($cur['attempt']) { [int]$cur['attempt'] + 1 } else { 2 }) }
+        [System.IO.File]::WriteAllText($pth, ($cur | ConvertTo-Json -Depth 10), $Utf8)
+        Write-Msg ('[모의] ' + $act + ' ' + [string]$e['id'])
+    }
+}
 function ConvertTo-Form {
     param([hashtable]$Form)
     $pairs = @()
@@ -142,7 +232,7 @@ function Call-Api {
         if ($r.RawContentStream) { $text = $Utf8.GetString($r.RawContentStream.ToArray()) } else { $text = [string]$r.Content }
     } catch { $text = [string]$r.Content }
     $json = $null
-    if ($text) { try { $json = $text | ConvertFrom-Json } catch {} }
+    if ($text) { try { $json = Read-Json $text } catch {} }     # 날짜가 글자로 유지되도록 Read-Json 을 거침 (PS7)
     return @{ Status = [int]$r.StatusCode; Json = $json; Text = $text; Headers = $r.Headers }
 }
 function Call-ApiRead {
@@ -213,12 +303,17 @@ function Get-ErrInfo {
     return [ordered]@{ step = $Step; message = $msg; code = $code; http = $http; friendly = (Get-Friendly $Step $msg $code $http) }
 }
 function Test-Recent {
-    param([string]$Ts)
-    try {
-        $t = [regex]::Replace($Ts, '([+-])(\d\d)(\d\d)$', '$1$2:$3')
-        $dt = [datetimeoffset]::Parse($t)
-        return (((Get-Now) - $dt.UtcDateTime).TotalMinutes -lt 30)
-    } catch { return $false }
+    param($Ts)
+    $dt = ConvertTo-Utc $Ts
+    if ($null -eq $dt) { return $false }
+    return (((Get-Now) - $dt).TotalMinutes -lt 30)
+}
+# 결과 파일의 심장박동이 최근(기본 15분 안)인지
+function Test-Fresh {
+    param($Ts, [int]$Min = 15)
+    $dt = ConvertTo-Utc $Ts
+    if ($null -eq $dt) { return $false }
+    return (((Get-Now) - $dt).TotalMinutes -lt $Min)
 }
 function Test-SameStart {
     param([string]$A, [string]$B)
@@ -300,7 +395,8 @@ function Step-Instagram {
     $s['status'] = 'running'; $s['error'] = $null
     $reuse = $false
     if ($s['containerId'] -and $s['containerStatus'] -notin @('ERROR', 'EXPIRED') -and $s['containerCreatedAt']) {
-        try { if (((Get-Now) - [datetime]::Parse([string]$s['containerCreatedAt']).ToUniversalTime()).TotalHours -lt 20) { $reuse = $true } } catch {}
+        $cd = ConvertTo-Utc $s['containerCreatedAt']
+        if ($cd -and ((Get-Now) - $cd).TotalHours -lt 20) { $reuse = $true }
     }
     if (-not $reuse) {
         $c = Call-Api -Method POST -Url "$base/media" -Form @{ media_type = 'REELS'; video_url = $RawUrl; caption = $caption; share_to_feed = 'true'; access_token = $tok } -TimeoutSec 90
@@ -377,7 +473,8 @@ function Step-Threads {
     $s['status'] = 'running'; $s['error'] = $null
     $reuse = $false
     if ($s['containerId'] -and $s['containerStatus'] -notin @('ERROR', 'EXPIRED') -and $s['containerCreatedAt']) {
-        try { if (((Get-Now) - [datetime]::Parse([string]$s['containerCreatedAt']).ToUniversalTime()).TotalHours -lt 20) { $reuse = $true } } catch {}
+        $cd = ConvertTo-Utc $s['containerCreatedAt']
+        if ($cd -and ((Get-Now) - $cd).TotalHours -lt 20) { $reuse = $true }
     }
     if (-not $reuse) {
         $c = Call-Api -Method POST -Url "$base/threads" -Form @{ media_type = 'VIDEO'; video_url = $RawUrl; text = $text; access_token = $tok } -TimeoutSec 90
@@ -454,53 +551,84 @@ function Test-Video {
 }
 
 # ---------- 예약 하나 처리 ----------
+# 예약 시각(한국시간 글자 또는 PS7 이 바꾼 DateTime)을 UTC 로. 못 읽으면 $null  (2026-10-22 첫 실제 시험에서 PS7 이 날짜로 바꿔 조용히 건너뛴 원인을 고친 곳)
+function Get-When {
+    param($Sch)
+    $sa = $Sch['scheduledAt']
+    try {
+        if ($sa -is [datetime]) { return [datetime]::SpecifyKind($sa, 'Unspecified').AddHours(-9) }
+        $fmts = [string[]]@('yyyy-MM-ddTHH:mm:ss', 'yyyy-MM-ddTHH:mm', 'yyyy-MM-dd HH:mm:ss', 'yyyy-MM-dd HH:mm')
+        $d = [datetime]::MinValue
+        if ([datetime]::TryParseExact(([string]$sa).Trim(), $fmts, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$d)) { return $d.AddHours(-9) }
+    } catch {}
+    return $null
+}
+# 새 시도(시간 변경 등): 이미 끝난(done/uncertain) 단계는 이어받고, 나머지는 처음부터
+function Reset-ForNewAttempt {
+    param($Res, [int]$Attempt)
+    $Res['attempt'] = $Attempt; $Res['state'] = 'running'; $Res['error'] = $null; $Res['resumes'] = 0
+    foreach ($t in @('instagram', 'threads')) {
+        $so = $Res['steps'][$t]
+        if ($so -and $so['status'] -in @('failed', 'running')) { $so['status'] = 'pending' }
+    }
+}
+# 반환: 'notdue' | 'finished'(이미 끝난 시도) | 'skipped'(다른 실행이 기다리는 중 등) | 'processed'(이번에 처리함)
 function Process-Schedule {
     param($Sch)
     $id = [string]$Sch['id']
-    if ($id -notmatch '^SCH-\d{14}(-\d+)?$') { return }
-    if ([string]$Sch['executor'] -ne 'cloud') { return }       # PC 예약은 건드리지 않음
-    if ([string]$Sch['status'] -ne 'scheduled') { return }     # 취소 등
+    if ($id -notmatch '^SCH-\d{14}(-\d+)?$') { return 'finished' }
+    if ([string]$Sch['executor'] -ne 'cloud') { return 'finished' }       # PC 예약은 건드리지 않음
+    if ([string]$Sch['status'] -ne 'scheduled') { return 'finished' }     # 취소 등
     $attempt = 1; if ($Sch['attempt']) { $attempt = [int]$Sch['attempt'] }
-    $when = $null
-    # PowerShell 7(클라우드)의 ConvertFrom-Json은 날짜 글자를 DateTime으로 바꿔 버린다 -> 글자/날짜 둘 다 받는다 (2026-10-22 첫 실제 시험에서 조용히 건너뛴 원인)
-    $sa = $Sch['scheduledAt']
-    try {
-        if ($sa -is [datetime]) { $when = [datetime]::SpecifyKind($sa, 'Unspecified').AddHours(-9) }
-        else { $when = [datetime]::ParseExact([string]$sa, 'yyyy-MM-ddTHH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture).AddHours(-9) }
-    } catch { Write-Msg "예약 $id 시각을 읽지 못했어요: $sa"; return }
+    $when = Get-When $Sch
+    if ($null -eq $when) {
+        # 조용히 건너뛰면 안 된다 -> 알림(빨간 X)
+        Write-Msg ("예약 $id 시각을 읽지 못했어요: " + [string]$Sch['scheduledAt'])
+        $script:Alert = $true
+        return 'finished'
+    }
     $now = Get-Now
-    if ($when -gt $now) { return }
+    if ($when.AddSeconds(-$LeadSec) -gt $now) { return 'notdue' }     # 아직 (LeadSec 전부터 시작)
     $late = ($now - $when).TotalMinutes
     $res = Load-Result $id
     $resumed = $false
+    $waitedByMe = $false
     if ($res) {
         $ra = 0; if ($res['attempt']) { $ra = [int]$res['attempt'] }
         if ($ra -ge $attempt) {
-            if ([string]$res['state'] -ne 'running') { return }   # 이미 끝난 시도 (done/failed/missed/...) -> 다시 하지 않음
-            # 이전 실행이 끊김 -> 단계 기록을 보고 이어서 (최대 3번)
-            $rc = 0; if ($res['resumes']) { $rc = [int]$res['resumes'] }
-            if ($rc -ge 3) { $res['state'] = 'failed'; $res['error'] = [ordered]@{ friendly = '클라우드 작업이 여러 번 중간에 끊겼어요. 인스타·스레드 앱에서 올라갔는지 확인해 주세요.' }; $res['finishedAt'] = $now.ToString('yyyy-MM-ddTHH:mm:ssZ'); Save-Result $id $res; $script:Alert = $true; return }
-            $res['resumes'] = $rc + 1; $resumed = $true
-        } else {
-            # 새 시도: 이미 끝난(done/uncertain) 단계는 이어받고, 나머지는 처음부터
-            $res['attempt'] = $attempt; $res['state'] = 'running'; $res['error'] = $null; $res['resumes'] = 0
-            foreach ($t in @('instagram', 'threads')) {
-                $so = $res['steps'][$t]
-                if ($so -and $so['status'] -in @('failed', 'running')) { $so['status'] = 'pending' }
+            $stt = [string]$res['state']
+            if ($stt -in @('waiting', 'released')) {
+                # 미리 와서 기다리던 표시: 내 것이면 이어서, 다른 실행이 최근까지 기다리던 것이면 건드리지 않고, 심장박동이 끊긴 것이면 이어받는다
+                if ($stt -eq 'waiting' -and [string]$res['waitRun'] -eq $RunId) { $waitedByMe = $true }
+                elseif ($stt -eq 'waiting' -and (Test-Fresh ([string]$res['heartbeat']))) { return 'skipped' }
+                $res['state'] = 'running'; $res['error'] = $null
+                if ($script:Mine.ContainsKey($id)) { $script:Mine.Remove($id) }
+            } elseif ($stt -ne 'running') { return 'finished' }   # 이미 끝난 시도 (done/failed/missed/...) -> 다시 하지 않음
+            else {
+                # 이전 실행이 끊김 -> 단계 기록을 보고 이어서 (최대 3번)
+                $rc = 0; if ($res['resumes']) { $rc = [int]$res['resumes'] }
+                if ($rc -ge 3) { $res['state'] = 'failed'; $res['error'] = [ordered]@{ friendly = '클라우드 작업이 여러 번 중간에 끊겼어요. 인스타·스레드 앱에서 올라갔는지 확인해 주세요.' }; $res['finishedAt'] = $now.ToString('yyyy-MM-ddTHH:mm:ssZ'); Save-Result $id $res; $script:Alert = $true; return 'processed' }
+                $res['resumes'] = $rc + 1; $resumed = $true
             }
+        } else {
+            Reset-ForNewAttempt $res $attempt
+            if ($script:Mine.ContainsKey($id)) { $script:Mine.Remove($id) }
         }
     } else {
         $res = [ordered]@{ kind = 'result'; executor = 'cloud'; scheduleId = $id; ep = [string]$Sch['ep']; attempt = $attempt; state = 'running'; steps = [ordered]@{}; log = @(); mock = [bool]$Mock; resumes = 0 }
     }
-    if (-not $resumed -and $late -gt $LateLimitMin) {
+    foreach ($k in @('waitRun', 'heartbeat', 'waitingSince')) { if ($res.Contains($k)) { $res.Remove($k) } }
+    # 60분 늦음 규칙: 미리 와서 기다린 경우(내가 기다리던 것)와 이어서 하는 경우에는 적용하지 않는다
+    if (-not $resumed -and -not $waitedByMe -and $late -gt $LateLimitMin) {
         $res['state'] = 'missed'
         $res['error'] = [ordered]@{ friendly = ('예약 시각보다 ' + [int]$late + '분 늦게 확인돼서(60분 초과) 올리지 않았어요. 시간을 바꿔 다시 예약하거나 직접 올려 주세요.'); message = 'late' }
         $res['finishedAt'] = $now.ToString('yyyy-MM-ddTHH:mm:ssZ')
         Add-Log $res "예약 시각 $([int]$late)분 초과 - 올리지 않음"
         Save-Result $id $res
         $script:Alert = $true
-        return
+        return 'processed'
     }
+    if ($waitedByMe) { Add-Log $res ('미리 와서 기다렸다가 시각에 시작 (예약 시각 대비 ' + [int][math]::Round($late * 60) + '초)') }
     $res['startedAt'] = $now.ToString('yyyy-MM-ddTHH:mm:ssZ')
     if (-not $res['startedAtKst']) { $res['startedAtKst'] = $now.AddHours(9).ToString('yyyy-MM-ddTHH:mm:ss') }
     Save-Result $id $res     # "올리는 중" 표시 먼저 (이후 실행이 같은 예약을 또 시작하지 않게)
@@ -515,7 +643,7 @@ function Process-Schedule {
         $res['state'] = 'failed'; $res['error'] = Get-ErrInfo $_ 'video'
         $res['finishedAt'] = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ')
         $res['error']['friendly'] = [string]$res['error']['message']
-        Save-Result $id $res; $script:Alert = $true; return
+        Save-Result $id $res; $script:Alert = $true; return 'processed'
     }
     foreach ($t in $targets) {
         try {
@@ -542,37 +670,180 @@ function Process-Schedule {
     $res['finishedAt'] = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ')
     Add-Log $res ('끝: ' + $res['state'])
     Save-Result $id $res
+    return 'processed'
+}
+
+# ---------- 예약 파일 읽기 (처음엔 내려받은 폴더, 기다리는 동안엔 보관함에서 다시) ----------
+# 반환: @( @{ name; sch } ... )  /  못 읽으면 던짐 (호출한 쪽이 이전 목록을 유지)
+function Get-ScheduleSnapshot {
+    param([bool]$Remote)
+    $out = @()
+    if ($Mock -or -not $Remote) {
+        if (-not (Test-Path -LiteralPath $SchedDir)) { return @() }
+        foreach ($f in @(Get-ChildItem -LiteralPath $SchedDir -Filter 'SCH-*.json' -File | Sort-Object Name)) {
+            try { $s = Read-Json ([System.IO.File]::ReadAllText($f.FullName, $Utf8)) } catch { Write-Msg ('읽지 못한 예약 파일: ' + $f.Name); continue }
+            if ($s) { $out += , @{ name = $f.Name; sch = $s } }
+        }
+        return $out
+    }
+    try { $lst = Call-ApiRead -Url "https://api.github.com/repos/$Repo/contents/schedules" -Headers (Get-GhHeaders) }
+    catch { if ([int]$_.Exception.Data['http'] -eq 404) { return @() }; throw }
+    foreach ($e in @($lst.Json)) {
+        $nm = [string]$e['name']
+        if ($nm -notmatch '^SCH-.*\.json$' -or [string]$e['type'] -ne 'file') { continue }
+        $sha = [string]$e['sha']
+        $c = $script:SchCache[$nm]
+        if (-not $c -or $c.sha -ne $sha) {
+            try {
+                $r = Call-ApiRead -Url "https://api.github.com/repos/$Repo/contents/schedules/$nm" -Headers (Get-GhHeaders)
+                $bytes = [Convert]::FromBase64String(([string]$r.Json['content']) -replace '\s', '')
+                $s = Read-Json ($Utf8.GetString($bytes).TrimStart([char]0xFEFF))
+            } catch { Write-Msg ('읽지 못한 예약 파일: ' + $nm); continue }
+            $c = @{ sha = $sha; sch = $s }
+            $script:SchCache[$nm] = $c
+        }
+        if ($c.sch) { $out += , @{ name = $nm; sch = $c.sch } }
+    }
+    return $out
+}
+
+# 예약 하나를 처리 (실패해도 다른 예약에 영향 없게)
+function Invoke-Process {
+    param($Sch)
+    try { return (Process-Schedule $Sch) }
+    catch {
+        Write-Msg ('예약 처리 중 문제 (' + [string]$Sch['id'] + '): ' + [string]$_.Exception.Message)
+        $script:Alert = $true
+        try {
+            $r = Load-Result ([string]$Sch['id'])
+            if (-not $r) { $r = [ordered]@{ kind = 'result'; executor = 'cloud'; scheduleId = [string]$Sch['id']; ep = [string]$Sch['ep']; attempt = $(if ($Sch['attempt']) { [int]$Sch['attempt'] } else { 1 }); steps = [ordered]@{}; log = @() } }
+            if ([string]$r['state'] -in @('', 'running', 'waiting', 'released')) { $r['state'] = 'failed'; $r['error'] = Get-ErrInfo $_ 'cloud'; $r['finishedAt'] = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ'); Save-Result ([string]$Sch['id']) $r }
+        } catch {}
+        return 'processed'
+    }
+}
+
+# ---------- 미리 와서 기다리기 ----------
+# 반환: 'ok'(내가 기다리는 중으로 표시함) | 'other'(다른 실행이 기다리는 중) | 'terminal'(이미 끝났거나 올리는 중)
+function Mark-Waiting {
+    param($Sch, $When)
+    $id = [string]$Sch['id']
+    $att = 1; if ($Sch['attempt']) { $att = [int]$Sch['attempt'] }
+    $m = $script:Mine[$id]
+    if ($m -and [int]$m.attempt -eq $att -and (((Get-Now) - $m.hbAt).TotalMinutes -lt 5)) { return 'ok' }    # 심장박동은 5분마다만
+    $res = Load-Result $id
+    if ($res) {
+        $ra = 0; if ($res['attempt']) { $ra = [int]$res['attempt'] }
+        if ($ra -ge $att) {
+            $st = [string]$res['state']
+            if ($st -eq 'waiting') {
+                if ([string]$res['waitRun'] -ne $RunId -and (Test-Fresh ([string]$res['heartbeat']))) { return 'other' }
+            } elseif ($st -ne 'released') { return 'terminal' }
+        } else { Reset-ForNewAttempt $res $att }
+    } else {
+        $res = [ordered]@{ kind = 'result'; executor = 'cloud'; scheduleId = $id; ep = [string]$Sch['ep']; attempt = $att; state = 'waiting'; steps = [ordered]@{}; log = @(); mock = [bool]$Mock; resumes = 0 }
+    }
+    $nowZ = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ')
+    $first = (-not $m)
+    $res['state'] = 'waiting'; $res['waitRun'] = $RunId; $res['heartbeat'] = $nowZ
+    if (-not $res['waitingSince'] -or $first) { $res['waitingSince'] = $nowZ }
+    $res['waitingFor'] = [string]$Sch['scheduledAt']
+    if ($first) { Add-Log $res ('미리 와서 기다리는 중 (예약 ' + [string]$Sch['scheduledAt'] + ' 한국시간)') }
+    Save-Result $id $res
+    $script:Mine[$id] = @{ attempt = $att; hbAt = (Get-Now) }
+    return 'ok'
+}
+# 내가 해 둔 waiting 표시 중 지금 기다리는 예약(KeepId)이 아닌 것은 풀어 준다 (취소·시간 변경·끝날 때). 이미 시각이 돼서 올린 것은 건드리지 않음
+function Release-Waits {
+    param([string]$KeepId = '')
+    foreach ($id in @($script:Mine.Keys)) {
+        if ($id -eq $KeepId) { continue }
+        try {
+            $r = Load-Result $id
+            if ($r -and [string]$r['state'] -eq 'waiting' -and [string]$r['waitRun'] -eq $RunId) {
+                $r['state'] = 'released'; $r['releasedAt'] = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ')
+                Add-Log $r '기다리기를 멈췄어요 (예약이 취소·변경됐거나 이 실행이 끝남)'
+                Save-Result $id $r
+            }
+        } catch { Write-Msg ('waiting 표시를 풀지 못했어요: ' + $id) }
+        $script:Mine.Remove($id)
+    }
+}
+
+function Run-Publish {
+    $start = Get-Now
+    $deadline = $start.AddMinutes($DeadlineMin)
+    $snap = Get-ScheduleSnapshot $false
+    Write-Msg ('예약 파일 ' + @($snap).Count + '개 확인')
+    $remoteFails = 0; $round = 0; $lastMsg = $null
+    while ($true) {
+        $round++
+        $cloud = @()
+        foreach ($it in @($snap)) {
+            $s = $it.sch
+            $sid = [string]$s['id']
+            if ($sid -notmatch '^SCH-\d{14}(-\d+)?$' -or [string]$s['executor'] -ne 'cloud' -or [string]$s['status'] -ne 'scheduled') { continue }
+            $att = 1; if ($s['attempt']) { $att = [int]$s['attempt'] }
+            $key = "$sid|$att"
+            if ($script:Finished.ContainsKey($key)) { continue }
+            $cloud += , @{ sch = $s; key = $key; when = (Get-When $s) }
+        }
+        # 시각을 읽지 못한 것은 Process-Schedule 이 알림을 남긴다 (한 번만)
+        foreach ($c in @($cloud | Where-Object { $null -eq $_.when })) { Invoke-Process $c.sch | Out-Null; $script:Finished[$c.key] = $true }
+        $cloud = @($cloud | Where-Object { $null -ne $_.when } | Sort-Object { $_.when })
+        # 1) 시각이 된 것 (시간 순서대로)
+        foreach ($c in $cloud) {
+            if ($script:Finished.ContainsKey($c.key)) { continue }
+            if ($c.when.AddSeconds(-$LeadSec) -gt (Get-Now)) { continue }
+            $r = Invoke-Process $c.sch
+            if ($r -in @('finished', 'processed')) { $script:Finished[$c.key] = $true }
+        }
+        if (-not $Wait) { break }
+        # 2) 앞으로 WaitWindowMin 분 안에 시각이 되는 다음 예약 -> 기다릴 곳 정하기
+        $now = Get-Now
+        $target = $null
+        foreach ($c in $cloud) {
+            if ($script:Finished.ContainsKey($c.key)) { continue }
+            $startAt = $c.when.AddSeconds(-$LeadSec)
+            if ($startAt -le $now) { continue }                          # 이미 시각이 된 것(다른 실행이 처리 중 등)은 위에서 봤음
+            if (($c.when - $now).TotalMinutes -gt $WaitWindowMin) { break }   # 시간 순서라 뒤는 더 멀다
+            if ($startAt -gt $deadline) { break }                        # 이 실행의 기다리기 한도를 넘김 -> 다음 실행이 이어받음
+            if ($script:NoWait.ContainsKey($c.key)) { continue }
+            $m = Mark-Waiting $c.sch $c.when
+            if ($m -eq 'ok') { $target = $c; break }
+            $script:NoWait[$c.key] = $m
+            Write-Msg ('기다리지 않음: ' + [string]$c.sch['id'] + ' (' + $m + ')')
+        }
+        Release-Waits $(if ($target) { [string]$target.sch['id'] } else { '' })
+        if (-not $target) { break }
+        $secs = [int][math]::Ceiling(($target.when.AddSeconds(-$LeadSec) - (Get-Now)).TotalSeconds)
+        $sleep = [math]::Min($PollSec, [math]::Max(1, $secs))
+        if ($null -eq $lastMsg -or ((Get-Now) - $lastMsg).TotalMinutes -ge 10) {
+            Write-Msg ('기다리는 중: ' + [string]$target.sch['id'] + ' (' + [string]$target.sch['scheduledAt'] + ' 한국시간, 약 ' + [int]($secs / 60) + '분 남음)')
+            $lastMsg = Get-Now
+        }
+        Wait-Sec $sleep
+        # 3) 기다리는 동안 바뀐 것(취소·시간 변경·새 예약)을 보관함에서 다시 읽는다
+        try { $snap = Get-ScheduleSnapshot $true; $remoteFails = 0 }
+        catch {
+            $remoteFails++
+            Write-Msg ('예약 파일을 다시 읽지 못했어요 (' + $remoteFails + '번째): ' + [string]$_.Exception.Message)
+            if ($remoteFails -ge 4) { Write-Msg '계속 읽지 못해 기다리기를 멈춰요 (다음 실행이 이어받아요).'; $script:Alert = $true; break }
+        }
+    }
+    Release-Waits ''
 }
 
 # ---------- 본 흐름 ----------
 Write-Msg "클라우드 예약 확인 시작 (mode=$Mode, mock=$([bool]$Mock))"
 try {
+    if ($Mock -and $MockEvents) { $script:Events = @(Read-Json ([System.IO.File]::ReadAllText($MockEvents, $Utf8))) }
     if ($Mode -eq 'check') { Run-Check }
-    else {
-        if (-not (Test-Path -LiteralPath $SchedDir)) { Write-Msg '예약 폴더가 없어요. 할 일 없음.' }
-        else {
-            $files = @(Get-ChildItem -LiteralPath $SchedDir -Filter 'SCH-*.json' -File | Sort-Object Name)
-            Write-Msg ("예약 파일 " + $files.Count + "개 확인")
-            foreach ($f in $files) {
-                $sch = $null
-                try { $sch = Read-Json ([System.IO.File]::ReadAllText($f.FullName, $Utf8)) } catch { Write-Msg ('읽지 못한 예약 파일: ' + $f.Name); continue }
-                if (-not $sch) { continue }
-                try { Process-Schedule $sch }
-                catch {
-                    Write-Msg ('예약 처리 중 문제 (' + $f.BaseName + '): ' + [string]$_.Exception.Message)
-                    $script:Alert = $true
-                    try {
-                        $r = Load-Result ([string]$sch['id'])
-                        if (-not $r) { $r = [ordered]@{ kind = 'result'; executor = 'cloud'; scheduleId = [string]$sch['id']; ep = [string]$sch['ep']; attempt = $(if ($sch['attempt']) { [int]$sch['attempt'] } else { 1 }); steps = [ordered]@{}; log = @() } }
-                        if ([string]$r['state'] -in @('', 'running')) { $r['state'] = 'failed'; $r['error'] = Get-ErrInfo $_ 'cloud'; $r['finishedAt'] = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ'); Save-Result ([string]$sch['id']) $r }
-                    } catch {}
-                }
-            }
-        }
-    }
+    else { Run-Publish }
 } catch {
     Write-Msg ('치명적 문제: ' + [string]$_.Exception.Message)
     $script:Alert = $true
+    try { Release-Waits '' } catch {}
 }
 if ($script:Alert) { Write-Msg '확인이 필요한 일이 있어요 (실패 알림용으로 이 실행을 실패로 표시합니다).'; exit 1 }
 Write-Msg '끝'
