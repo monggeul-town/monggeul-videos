@@ -462,7 +462,12 @@ function Process-Schedule {
     if ([string]$Sch['status'] -ne 'scheduled') { return }     # 취소 등
     $attempt = 1; if ($Sch['attempt']) { $attempt = [int]$Sch['attempt'] }
     $when = $null
-    try { $when = [datetime]::ParseExact([string]$Sch['scheduledAt'], 'yyyy-MM-ddTHH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture).AddHours(-9) } catch { return }
+    # PowerShell 7(클라우드)의 ConvertFrom-Json은 날짜 글자를 DateTime으로 바꿔 버린다 -> 글자/날짜 둘 다 받는다 (2026-10-22 첫 실제 시험에서 조용히 건너뛴 원인)
+    $sa = $Sch['scheduledAt']
+    try {
+        if ($sa -is [datetime]) { $when = [datetime]::SpecifyKind($sa, 'Unspecified').AddHours(-9) }
+        else { $when = [datetime]::ParseExact([string]$sa, 'yyyy-MM-ddTHH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture).AddHours(-9) }
+    } catch { Write-Msg "예약 $id 시각을 읽지 못했어요: $sa"; return }
     $now = Get-Now
     if ($when -gt $now) { return }
     $late = ($now - $when).TotalMinutes
