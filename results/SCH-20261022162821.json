@@ -17,10 +17,10 @@
       "permalink": "https://www.instagram.com/reel/DezEY_6Ey-P/"
     },
     "threads": {
-      "status": "running",
+      "status": "publishing",
       "error": null,
       "containerId": "18126669412818833",
-      "containerStatus": "IN_PROGRESS",
+      "containerStatus": "FINISHED",
       "containerCreatedAt": "2026-10-22T13:17:39Z"
     }
   },
@@ -31,5 +31,5 @@
   "resumes": 0,
   "startedAt": "2026-10-22T13:16:00Z",
   "startedAtKst": "2026-10-22T22:16:00",
-  "updatedAt": "2026-10-22T13:17:39Z"
+  "updatedAt": "2026-10-22T13:18:11Z"
 }
