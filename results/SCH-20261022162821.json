@@ -23,15 +23,17 @@
       "containerStatus": "FINISHED",
       "containerCreatedAt": "2026-10-22T13:17:39Z",
       "mediaId": "17959967874252896",
-      "publishedAt": "2026-10-22T13:18:17Z"
+      "publishedAt": "2026-10-22T13:18:17Z",
+      "permalink": "https://www.threads.com/@monggeul.town/post/DezEkSfFS3-"
     }
   },
   "log": [
-    "[13:17:37Z] 인스타 게시 완료"
+    "[13:17:37Z] 인스타 게시 완료",
+    "[13:18:19Z] 스레드 게시 완료"
   ],
   "mock": false,
   "resumes": 0,
   "startedAt": "2026-10-22T13:16:00Z",
   "startedAtKst": "2026-10-22T22:16:00",
-  "updatedAt": "2026-10-22T13:18:17Z"
+  "updatedAt": "2026-10-22T13:18:19Z"
 }
