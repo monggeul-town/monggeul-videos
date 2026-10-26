@@ -1,0 +1,19 @@
+{
+  "kind": "result",
+  "executor": "cloud",
+  "scheduleId": "SCH-20261025023013",
+  "ep": "EP-027",
+  "attempt": 1,
+  "state": "waiting",
+  "steps": {},
+  "log": [
+    "[10:07:16Z] 미리 와서 기다리는 중 (예약 2026-10-26T22:00:00 한국시간)"
+  ],
+  "mock": false,
+  "resumes": 0,
+  "waitRun": "40304867103-1",
+  "heartbeat": "2026-10-26T10:07:16Z",
+  "waitingSince": "2026-10-26T10:07:16Z",
+  "waitingFor": "2026-10-26T22:00:00",
+  "updatedAt": "2026-10-26T10:07:16Z"
+}
