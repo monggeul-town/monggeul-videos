@@ -17,7 +17,11 @@
       "permalink": "https://www.instagram.com/reel/DfFEIQKgVfL/"
     },
     "threads": {
-      "status": "pending"
+      "status": "running",
+      "error": null,
+      "containerId": "18128597620818833",
+      "containerStatus": "IN_PROGRESS",
+      "containerCreatedAt": "2026-10-29T13:01:17Z"
     }
   },
   "log": [
@@ -28,7 +32,7 @@
   "mock": false,
   "resumes": 0,
   "waitingFor": "2026-10-29T22:00:00",
-  "updatedAt": "2026-10-29T13:01:15Z",
+  "updatedAt": "2026-10-29T13:01:17Z",
   "error": null,
   "startedAt": "2026-10-29T12:59:40Z",
   "startedAtKst": "2026-10-29T21:59:40"
