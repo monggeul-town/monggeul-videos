@@ -1,0 +1,20 @@
+{
+  "kind": "result",
+  "executor": "cloud",
+  "scheduleId": "SCH-20261031191103",
+  "ep": "EP-033",
+  "attempt": 1,
+  "state": "missed",
+  "steps": {},
+  "log": [
+    "[15:06:09Z] 예약 시각 126분 초과 - 올리지 않음"
+  ],
+  "mock": false,
+  "resumes": 0,
+  "error": {
+    "friendly": "예약 시각보다 126분 늦게 확인돼서(60분 초과) 올리지 않았어요. 시간을 바꿔 다시 예약하거나 직접 올려 주세요.",
+    "message": "late"
+  },
+  "finishedAt": "2026-11-01T15:06:08Z",
+  "updatedAt": "2026-11-01T15:06:09Z"
+}
