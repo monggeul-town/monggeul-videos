@@ -13,16 +13,19 @@
       "containerStatus": "FINISHED",
       "containerCreatedAt": "2026-11-03T13:07:40Z",
       "mediaId": "18155477758536227",
-      "publishedAt": "2026-11-03T13:09:10Z"
+      "publishedAt": "2026-11-03T13:09:10Z",
+      "permalink": "https://www.instagram.com/reel/DfR89y7mZaF/"
     },
     "threads": {
       "status": "pending"
     }
   },
-  "log": [],
+  "log": [
+    "[13:09:11Z] 인스타 게시 완료"
+  ],
   "mock": false,
   "resumes": 0,
   "startedAt": "2026-11-03T13:07:36Z",
   "startedAtKst": "2026-11-03T22:07:36",
-  "updatedAt": "2026-11-03T13:09:10Z"
+  "updatedAt": "2026-11-03T13:09:11Z"
 }
