@@ -1,6 +1,7 @@
 ﻿# 요약: 클라우드(GitHub Actions) 예약 게시 일꾼. 깨어나 "시각이 된 예약"을 인스타 릴스 -> 스레드 순서로 올린다.
 #       (PC의 09_도구\자동게시.ps1 과 같은 순서·같은 API. 모양만 클라우드용으로 단순화)
-#       -Wait(5분 간격 실행에서 켜짐): 앞으로 3시간 안에 시각이 되는 예약이 있으면 끝내지 않고 기다렸다가 그 시각(약 20초 전 시작 -> 정각 게시)에 올린다.
+#       -Wait(push·cron·바통 넘기기 실행에서 켜짐) = 이어달리기(2026-11-03): 앞으로 48시간 안의 예약이 있는 동안 끝내지 않고 기다렸다가 그 시각(약 20초 전 시작 -> 정각 게시)에 올린다.
+#       300분(소프트)~335분(하드) 돌면 스스로를 workflow_dispatch 로 다시 불러 바통을 넘기고 끝낸다(남은 예약이 없으면 멈춤). -Mode relay-test = 스스로 부르기 점검.
 #       기다리는 동안 예약 파일을 1~2분마다 다시 읽어 취소·시간 변경을 반영하고, 결과 파일에 "waiting"(심장박동 5분마다)을 적어 다른 실행이 건너뛰게 한다.
 # 놓는 곳: 보관함(monggeul-videos)의 scripts/cloud-publish.ps1  (PowerShell 5.1 / 7 모두 동작)
 # 인자: -Mode run(기본, 올리기) | check(읽기 전용 점검) / -Wait / -Mock -RepoDir 폴더 (모의: 인터넷 요청 없이 폴더 안 파일로만 시험)
@@ -18,8 +19,11 @@ param(
     [string]$RunId = '',
     [switch]$SimPs7,          # 모의 시험 전용: PowerShell 7 의 날짜 자동 변환을 흉내
     [string]$MockEvents = '', # 모의 시험 전용: 기다리는 동안 일어날 일(취소·시간 변경·끊김·예약 추가)을 적은 JSON 파일
-    [int]$WaitWindowMin = 180,
-    [int]$DeadlineMin = 185,  # 이 실행이 "새로 기다리기 시작"할 수 있는 한도(시작 후 분). 워크플로 제한시간(240분)보다 충분히 짧게
+    [int]$WaitWindowMin = 180,    # 시각이 이 안에 들어온 예약은 "미리 와서 기다리는 중" 표시(결과 파일 waiting)를 남긴다
+    [int]$RelayWindowMin = 2880,  # 이어달리기: 앞으로 이 시간(48시간) 안에 시각이 되는 예약이 있으면 사슬을 끊지 않고 계속 기다린다
+    [int]$SoftMin = 300,          # 이 실행이 시작한 지 이만큼(분) 지나면, 다음 예약이 30분 넘게 남았을 때 다음 실행에 바통을 넘긴다
+    [int]$HardMin = 335,          # 무조건 바통을 넘기는 한계(분). 워크플로 제한시간(350분, GitHub 작업 최대 360분)보다 짧게
+    [int]$HandoffGuardMin = 30,   # 소프트 한계 뒤라도 다음 예약이 이 시간(분) 안이면 끝까지 올리고 넘긴다
     [int]$PollSec = 90,
     [int]$LeadSec = 20        # 인스타 컨테이너 준비(약 20초)를 감안해 이만큼 먼저 시작 -> 게시가 정각 무렵
 )
@@ -170,6 +174,12 @@ function Mock-Api {
     $c = { param($k) if (-not $script:MockCount.ContainsKey($k)) { $script:MockCount[$k] = 0 }; $script:MockCount[$k]++; return $script:MockCount[$k] }
     if ($Url -match '^https://api\.github\.com/repos/[^/]+/[^/]+$') { return (& $ok ([pscustomobject]@{ private = $false; default_branch = 'main' })) }
     if ($Url -match '^https://raw\.githubusercontent\.com/') { return (& $ok $null) }
+    if ($Url -match '/actions/workflows/[^/]+/dispatches$') {
+        if ($FailAt -eq 'relay') { throw (New-Err -Message '모의 실패 (relay)' -Code 'MOCK' -Http 403) }
+        $line = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ') + ' ' + $Method
+        [System.IO.File]::AppendAllText((Join-Path $Base 'relay.log'), $line + "`n", $Utf8)
+        return @{ Status = 204; Json = $null; Text = '' }
+    }
     if ($Url -match '^https://graph\.instagram\.com/me\?') { return (& $ok ([pscustomobject]@{ user_id = '1784140000000001'; username = 'monggeul.town' })) }
     if ($Url -match '^https://graph\.threads\.net/me\?') { return (& $ok ([pscustomobject]@{ id = '2600000000000001'; username = 'monggeul.town' })) }
     if ($Url -match '^https://graph\.instagram\.com/[^/]+/media_publish') {
@@ -342,7 +352,7 @@ function Run-Check {
     try { $r = Call-ApiRead -Url "https://api.github.com/repos/$Repo" -Headers (Get-GhHeaders); if ($r.Json.private -eq $true) { $repoOk = $false; $repoMsg = '보관함이 비공개(Private)예요. 공개여야 해요.' } }
     catch { $repoOk = $false; $repoMsg = '보관함을 읽지 못했어요.' }
     $allOk = ($items['INSTAGRAM_TOKEN'] -and $items['THREADS_TOKEN'] -and $acc['instagram'].ok -and $acc['threads'].ok -and $repoOk)
-    $res = [ordered]@{ kind = 'check'; ok = [bool]$allOk; checkedAt = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ'); secretsPresent = $items; accounts = $acc; repo = [ordered]@{ ok = $repoOk; message = $repoMsg }; mock = [bool]$Mock }
+    $res = [ordered]@{ kind = 'check'; ok = [bool]$allOk; checkedAt = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ'); secretsPresent = $items; accounts = $acc; repo = [ordered]@{ ok = $repoOk; message = $repoMsg }; trigger = ([string]$env:GITHUB_EVENT_NAME + ' / ' + [string]$env:GITHUB_ACTOR); mock = [bool]$Mock }
     Save-Result '_check' $res
     Write-Msg ('점검 결과: ' + $(if ($allOk) { '모두 OK' } else { '확인 필요 (results/_check.json 참고)' }))
     if (-not $allOk) { $script:Alert = $true }
@@ -605,6 +615,8 @@ function Process-Schedule {
                 if ($script:Mine.ContainsKey($id)) { $script:Mine.Remove($id) }
             } elseif ($stt -ne 'running') { return 'finished' }   # 이미 끝난 시도 (done/failed/missed/...) -> 다시 하지 않음
             else {
+                # 다른 실행이 지금 막 올리는 중(결과 파일이 10분 안에 갱신됨)이면 절대 건드리지 않는다 -> 중복 게시 방지
+                if ([string]$res['runId'] -ne $RunId -and (Test-Fresh ([string]$res['updatedAt']) 10)) { return 'skipped' }
                 # 이전 실행이 끊김 -> 단계 기록을 보고 이어서 (최대 3번)
                 $rc = 0; if ($res['resumes']) { $rc = [int]$res['resumes'] }
                 if ($rc -ge 3) { $res['state'] = 'failed'; $res['error'] = [ordered]@{ friendly = '클라우드 작업이 여러 번 중간에 끊겼어요. 인스타·스레드 앱에서 올라갔는지 확인해 주세요.' }; $res['finishedAt'] = $now.ToString('yyyy-MM-ddTHH:mm:ssZ'); Save-Result $id $res; $script:Alert = $true; return 'processed' }
@@ -631,6 +643,7 @@ function Process-Schedule {
     if ($waitedByMe) { Add-Log $res ('미리 와서 기다렸다가 시각에 시작 (예약 시각 대비 ' + [int][math]::Round($late * 60) + '초)') }
     $res['startedAt'] = $now.ToString('yyyy-MM-ddTHH:mm:ssZ')
     if (-not $res['startedAtKst']) { $res['startedAtKst'] = $now.AddHours(9).ToString('yyyy-MM-ddTHH:mm:ss') }
+    $res['runId'] = $RunId
     Save-Result $id $res     # "올리는 중" 표시 먼저 (이후 실행이 같은 예약을 또 시작하지 않게)
     $targets = @(@($Sch['targets']) | Where-Object { $_ -in @('instagram', 'threads') })
     $failed = @()
@@ -770,12 +783,32 @@ function Release-Waits {
     }
 }
 
+# 이어달리기: 같은 워크플로를 스스로 다시 불러 다음 실행(바통 받는 실행)을 만든다. GITHUB_TOKEN 으로 부른 workflow_dispatch 는 새 실행을 만든다(GitHub 문서). actions: write 권한 필요.
+function Dispatch-Self {
+    param([string]$RunMode = 'run', [string]$WaitFlag = 'true')
+    $body = (@{ ref = $Branch; inputs = @{ mode = $RunMode; wait = $WaitFlag } } | ConvertTo-Json -Compress)
+    for ($i = 1; $i -le 4; $i++) {
+        try {
+            Call-Api -Method POST -Url "https://api.github.com/repos/$Repo/actions/workflows/scheduled-publish.yml/dispatches" -Headers (Get-GhHeaders) -JsonBody $body -TimeoutSec 30 | Out-Null
+            Write-Msg ("다음 실행을 불렀어요 (mode=$RunMode, wait=$WaitFlag)")
+            return $true
+        } catch {
+            Write-Msg ("다음 실행을 부르지 못했어요 ($i/4): " + [string]$_.Exception.Message + ' (http ' + [string]$_.Exception.Data['http'] + ')')
+            if ($i -lt 4) { Wait-Sec (5 * $i) }
+        }
+    }
+    return $false
+}
+
 function Run-Publish {
     $start = Get-Now
-    $deadline = $start.AddMinutes($DeadlineMin)
-    $snap = Get-ScheduleSnapshot $false
+    $soft = $start.AddMinutes($SoftMin)
+    $hard = $start.AddMinutes($HardMin)
+    $snap = $null
+    if ($Wait -and -not $Mock) { try { $snap = Get-ScheduleSnapshot $true } catch { $snap = $null } }   # 가장 새 목록부터 (내려받은 폴더는 옛것일 수 있음)
+    if ($null -eq $snap) { $snap = Get-ScheduleSnapshot $false }
     Write-Msg ('예약 파일 ' + @($snap).Count + '개 확인')
-    $remoteFails = 0; $round = 0; $lastMsg = $null
+    $remoteFails = 0; $round = 0; $lastMsg = $null; $handoff = $false
     while ($true) {
         $round++
         $cloud = @()
@@ -790,36 +823,49 @@ function Run-Publish {
         }
         # 시각을 읽지 못한 것은 Process-Schedule 이 알림을 남긴다 (한 번만)
         foreach ($c in @($cloud | Where-Object { $null -eq $_.when })) { Invoke-Process $c.sch | Out-Null; $script:Finished[$c.key] = $true }
-        $cloud = @($cloud | Where-Object { $null -ne $_.when } | Sort-Object { $_.when })
-        # 1) 시각이 된 것 (시간 순서대로)
+        $cloud = @($cloud | Where-Object { $null -ne $_.when } | Sort-Object @{ Expression = { $_.when } }, @{ Expression = { [string]$_.sch['id'] } })   # 같은 시각이면 예약 번호(만든 순서)대로 -> 항상 같은 순서
+        # 1) 시각이 된 것 (시간 순서대로). 다른 실행이 올리는 중이거나 기다리는 중(skipped)이면 잠시 지켜본다
+        $hold = $false
         foreach ($c in $cloud) {
             if ($script:Finished.ContainsKey($c.key)) { continue }
             if ($c.when.AddSeconds(-$LeadSec) -gt (Get-Now)) { continue }
             $r = Invoke-Process $c.sch
             if ($r -in @('finished', 'processed')) { $script:Finished[$c.key] = $true }
+            elseif ($r -eq 'skipped') { $hold = $true }
         }
         if (-not $Wait) { break }
-        # 2) 앞으로 WaitWindowMin 분 안에 시각이 되는 다음 예약 -> 기다릴 곳 정하기
+        # 2) 앞으로 시각이 되는 다음 예약들 (이어달리기 한도 RelayWindowMin 안). 가까운 것(WaitWindowMin 안)은 "기다리는 중" 표시
         $now = Get-Now
         $target = $null
+        $nextWhen = $null
         foreach ($c in $cloud) {
             if ($script:Finished.ContainsKey($c.key)) { continue }
-            $startAt = $c.when.AddSeconds(-$LeadSec)
-            if ($startAt -le $now) { continue }                          # 이미 시각이 된 것(다른 실행이 처리 중 등)은 위에서 봤음
-            if (($c.when - $now).TotalMinutes -gt $WaitWindowMin) { break }   # 시간 순서라 뒤는 더 멀다
-            if ($startAt -gt $deadline) { break }                        # 이 실행의 기다리기 한도를 넘김 -> 다음 실행이 이어받음
             if ($script:NoWait.ContainsKey($c.key)) { continue }
+            $startAt = $c.when.AddSeconds(-$LeadSec)
+            if ($startAt -le $now) { continue }                          # 이미 시각이 된 것은 위에서 봤음
+            if (($c.when - $now).TotalMinutes -gt $RelayWindowMin) { break }   # 시간 순서라 뒤는 더 멀다 -> 사슬을 이을 필요 없음
+            if ($null -eq $nextWhen) { $nextWhen = $c.when }
+            if (($c.when - $now).TotalMinutes -gt $WaitWindowMin) { break }    # 아직 멀다: 표시 없이 지켜보기만
+            if ($startAt -gt $hard) { break }
             $m = Mark-Waiting $c.sch $c.when
             if ($m -eq 'ok') { $target = $c; break }
+            if ($m -eq 'other') { $hold = $true; break }             # 끊긴 실행의 흔적(15분 안): 흔적이 낡을 때까지 지켜봤다가 이어받는다
             $script:NoWait[$c.key] = $m
             Write-Msg ('기다리지 않음: ' + [string]$c.sch['id'] + ' (' + $m + ')')
+            if ($c.when -eq $nextWhen) { $nextWhen = $null }
         }
         Release-Waits $(if ($target) { [string]$target.sch['id'] } else { '' })
-        if (-not $target) { break }
-        $secs = [int][math]::Ceiling(($target.when.AddSeconds(-$LeadSec) - (Get-Now)).TotalSeconds)
+        if (-not $target -and $null -eq $nextWhen -and -not $hold) { break }        # 남은 예약이 없다 -> 사슬을 멈춘다
+        # 3) 바통 넘기기: 오래 돌았고(소프트 한계) 다음 예약이 아직 30분 넘게 남았거나, 하드 한계에 닿았으면 다음 실행에게
+        $untilNext = $(if ($null -ne $nextWhen) { ($nextWhen.AddSeconds(-$LeadSec) - $now).TotalMinutes } else { 99999 })
+        if ($now -ge $hard -or ($now -ge $soft -and -not $hold -and $untilNext -gt $HandoffGuardMin)) { $handoff = $true; break }
+        $secs = $PollSec
+        if ($target) { $secs = [int][math]::Ceiling(($target.when.AddSeconds(-$LeadSec) - (Get-Now)).TotalSeconds) }
         $sleep = [math]::Min($PollSec, [math]::Max(1, $secs))
         if ($null -eq $lastMsg -or ((Get-Now) - $lastMsg).TotalMinutes -ge 10) {
-            Write-Msg ('기다리는 중: ' + [string]$target.sch['id'] + ' (' + [string]$target.sch['scheduledAt'] + ' 한국시간, 약 ' + [int]($secs / 60) + '분 남음)')
+            if ($target) { Write-Msg ('기다리는 중: ' + [string]$target.sch['id'] + ' (' + [string]$target.sch['scheduledAt'] + ' 한국시간, 약 ' + [int]($secs / 60) + '분 남음)') }
+            elseif ($hold) { Write-Msg '다른 실행이 올리는 중이거나 끊긴 흔적이 남아 있어요 - 지켜보는 중' }
+            else { Write-Msg ('다음 예약까지 약 ' + [int]$untilNext + '분 - 지켜보는 중') }
             $lastMsg = Get-Now
         }
         Wait-Sec $sleep
@@ -832,6 +878,13 @@ function Run-Publish {
         }
     }
     Release-Waits ''
+    if ($handoff) {
+        Write-Msg ('바통 넘기기: 이 실행이 ' + [int]((Get-Now) - $start).TotalMinutes + '분 돌았어요. 다음 실행을 불러요.')
+        if (-not (Dispatch-Self 'run' 'true')) {
+            Write-Msg '다음 실행을 부르지 못했어요. 보관함 예약 확인(5분 간격 예비)이나 예약 파일 저장 때 다시 시작돼요.'
+            $script:Alert = $true
+        }
+    }
 }
 
 # ---------- 본 흐름 ----------
@@ -839,6 +892,11 @@ Write-Msg "클라우드 예약 확인 시작 (mode=$Mode, mock=$([bool]$Mock))"
 try {
     if ($Mock -and $MockEvents) { $script:Events = @(Read-Json ([System.IO.File]::ReadAllText($MockEvents, $Utf8))) }
     if ($Mode -eq 'check') { Run-Check }
+    elseif ($Mode -eq 'relay-test') {
+        # 이어달리기 점검: 아무것도 올리지 않고, 스스로를 점검(check) 모드로 한 번 불러 본다. 새 실행이 생기고 results/_check.json 의 trigger 칸에 기록된다
+        if (Dispatch-Self 'check' 'false') { Write-Msg '이어달리기 점검: 다음 실행을 불렀어요. Actions 탭에 새 실행(check)이 생기면 성공이에요.' }
+        else { Write-Msg '이어달리기 점검 실패: 다음 실행을 부르지 못했어요. 워크플로 권한(actions: write)을 확인해야 해요.'; $script:Alert = $true }
+    }
     else { Run-Publish }
 } catch {
     Write-Msg ('치명적 문제: ' + [string]$_.Exception.Message)
