@@ -23,15 +23,17 @@
       "containerStatus": "FINISHED",
       "containerCreatedAt": "2026-11-03T13:09:14Z",
       "mediaId": "18009988961784071",
-      "publishedAt": "2026-11-03T13:09:52Z"
+      "publishedAt": "2026-11-03T13:09:52Z",
+      "permalink": "https://www.threads.com/@monggeul.town/post/DfR9JMWsEYM"
     }
   },
   "log": [
-    "[13:09:11Z] 인스타 게시 완료"
+    "[13:09:11Z] 인스타 게시 완료",
+    "[13:09:53Z] 스레드 게시 완료"
   ],
   "mock": false,
   "resumes": 0,
   "startedAt": "2026-11-03T13:07:36Z",
   "startedAtKst": "2026-11-03T22:07:36",
-  "updatedAt": "2026-11-03T13:09:52Z"
+  "updatedAt": "2026-11-03T13:09:53Z"
 }
