@@ -3,6 +3,9 @@
 #       -Wait(push·cron·바통 넘기기 실행에서 켜짐) = 이어달리기(2026-11-03): 앞으로 48시간 안의 예약이 있는 동안 끝내지 않고 기다렸다가 그 시각(약 20초 전 시작 -> 정각 게시)에 올린다.
 #       300분(소프트)~335분(하드) 돌면 스스로를 workflow_dispatch 로 다시 불러 바통을 넘기고 끝낸다(남은 예약이 없으면 멈춤). -Mode relay-test = 스스로 부르기 점검.
 #       기다리는 동안 예약 파일을 1~2분마다 다시 읽어 취소·시간 변경을 반영하고, 결과 파일에 "waiting"(심장박동 5분마다)을 적어 다른 실행이 건너뛰게 한다.
+#       사슬 끊김 수리(2026-11-05): 11/4 에 다시 읽기 4번 실패 -> 바통 없이 끝나 사슬이 끊겼다. 이제 (1) 다시 읽기가 계속 실패해도 멈추지 않고 이전 목록으로 기다리며 더 긴 간격으로 재시도,
+#       (2) 어떤 이유로 끝나든(치명적 오류 등) 앞으로 48시간 안에 올릴 예약이 있으면 반드시 다음 실행을 부름(오류 때는 1~10분 쉬었다가), (3) 워크플로의 안전장치 단계가 -Mode safety-relay 로
+#       이 스크립트가 실패·제한시간 초과로 끝났어도 다시 한 번 확인해서 부름, (4) 끝날 때마다 results/_relay.json 에 이유·오류를 남김(비밀 값 없음).
 # 놓는 곳: 보관함(monggeul-videos)의 scripts/cloud-publish.ps1  (PowerShell 5.1 / 7 모두 동작)
 # 인자: -Mode run(기본, 올리기) | check(읽기 전용 점검) / -Wait / -Mock -RepoDir 폴더 (모의: 인터넷 요청 없이 폴더 안 파일로만 시험)
 # 열쇠(Secrets)는 환경변수로만 받는다: INSTAGRAM_TOKEN THREADS_TOKEN INSTAGRAM_USER_ID THREADS_USER_ID (+ 자동 제공 GITHUB_TOKEN, GITHUB_REPOSITORY)
@@ -59,6 +62,13 @@ $script:Finished = @{}    # 이 실행에서 더는 볼 필요 없는 예약 (id
 $script:NoWait = @{}      # 기다리지 않기로 한 예약 (id|attempt)
 $script:SchCache = @{}    # 보관함 예약 파일 읽기 캐시 (파일 이름 -> @{ sha; sch })
 $script:Events = @()
+$script:ProcRetry = @{}   # 일시 오류로 다시 시도한 횟수 (예약 id -> 횟수)
+$script:LastSnap = $null  # 가장 최근에 알고 있던 예약 목록 (끝날 때 "남은 예약이 있나" 판단용)
+$script:EndReason = ''    # '' = 정상(남은 예약 없음) | handoff = 한도 도달 | fatal = 치명적 오류
+$script:EndError = ''
+$script:RereadFailsTotal = 0; $script:RereadMaxStreak = 0; $script:LastRereadError = ''; $script:RereadDiagAt = $null
+$script:Dispatched = $false
+$script:StartedAtZ = ''
 function Get-Now {
     if ($Mock) {
         # 모의: 가상 시계 (기다리면 시간이 흐른 것으로 친다 - 실제로는 기다리지 않음)
@@ -266,12 +276,13 @@ function Get-GhHeaders { return @{ Authorization = "Bearer $($env:GITHUB_TOKEN)"
 function Load-Result {
     param([string]$Id)
     if ($Mock) {
+        if ($FailAt -eq 'result_transient' -and $Id -ne '_relay' -and -not $script:MockCount.ContainsKey('resfail')) { $script:MockCount['resfail'] = 1; throw (New-Err -Message '모의: 일시 오류(결과 파일 읽기)' -Code 'MOCK' -Http 503) }
         $p = Join-Path $ResDir "$Id.json"
         if (-not (Test-Path -LiteralPath $p)) { return $null }
         return (Read-Json ([System.IO.File]::ReadAllText($p, $Utf8)))
     }
     try {
-        $r = Call-Api -Method GET -Url "https://api.github.com/repos/$Repo/contents/results/$Id.json" -Headers (Get-GhHeaders) -TimeoutSec 30
+        $r = Call-ApiRead -Url "https://api.github.com/repos/$Repo/contents/results/$Id.json" -Headers (Get-GhHeaders)   # 일시 오류(5xx·끊김)는 3번까지 다시 시도
         $script:Sha[$Id] = [string]$r.Json.sha
         $bytes = [Convert]::FromBase64String((([string]$r.Json.content) -replace '\s', ''))
         return (Read-Json ($Utf8.GetString($bytes)))
@@ -691,33 +702,43 @@ function Process-Schedule {
 function Get-ScheduleSnapshot {
     param([bool]$Remote)
     $out = @()
+    if ($Mock -and $Remote -and $FailAt -eq 'reread') { throw (New-Err -Message '모의: 예약 목록 다시 읽기 실패' -Code 'MOCK' -Http 503) }
     if ($Mock -or -not $Remote) {
-        if (-not (Test-Path -LiteralPath $SchedDir)) { return @() }
+        if (-not (Test-Path -LiteralPath $SchedDir)) { return ,@() }
         foreach ($f in @(Get-ChildItem -LiteralPath $SchedDir -Filter 'SCH-*.json' -File | Sort-Object Name)) {
             try { $s = Read-Json ([System.IO.File]::ReadAllText($f.FullName, $Utf8)) } catch { Write-Msg ('읽지 못한 예약 파일: ' + $f.Name); continue }
             if ($s) { $out += , @{ name = $f.Name; sch = $s } }
         }
-        return $out
+        return ,$out
     }
     try { $lst = Call-ApiRead -Url "https://api.github.com/repos/$Repo/contents/schedules" -Headers (Get-GhHeaders) }
-    catch { if ([int]$_.Exception.Data['http'] -eq 404) { return @() }; throw }
+    catch { if ([int]$_.Exception.Data['http'] -eq 404) { return ,@() }; throw }
     foreach ($e in @($lst.Json)) {
         $nm = [string]$e['name']
         if ($nm -notmatch '^SCH-.*\.json$' -or [string]$e['type'] -ne 'file') { continue }
         $sha = [string]$e['sha']
         $c = $script:SchCache[$nm]
         if (-not $c -or $c.sha -ne $sha) {
+            $r = $null
+            try { $r = Call-ApiRead -Url "https://api.github.com/repos/$Repo/contents/schedules/$nm" -Headers (Get-GhHeaders) }
+            catch {
+                # 인터넷·GitHub 일시 오류로 한 파일을 못 읽었다고 그 예약이 목록에서 사라지면 "남은 예약 없음"으로 착각해 사슬이 끊긴다
+                # -> 옛 내용이 있으면 그걸 쓰고, 없으면 목록 전체를 못 읽은 것으로 던진다(호출한 쪽이 이전 목록 유지)
+                Write-Msg ('읽지 못한 예약 파일: ' + $nm)
+                if ($c -and $c.sch) { $out += , @{ name = $nm; sch = $c.sch }; continue }
+                throw
+            }
+            $s = $null
             try {
-                $r = Call-ApiRead -Url "https://api.github.com/repos/$Repo/contents/schedules/$nm" -Headers (Get-GhHeaders)
                 $bytes = [Convert]::FromBase64String((([string]$r.Json['content']) -replace '\s', ''))
                 $s = Read-Json ($Utf8.GetString($bytes).TrimStart([char]0xFEFF))
-            } catch { Write-Msg ('읽지 못한 예약 파일: ' + $nm); continue }
+            } catch { Write-Msg ('내용을 해석하지 못한 예약 파일(건너뜀): ' + $nm); continue }
             $c = @{ sha = $sha; sch = $s }
             $script:SchCache[$nm] = $c
         }
         if ($c.sch) { $out += , @{ name = $nm; sch = $c.sch } }
     }
-    return $out
+    return ,$out
 }
 
 # 예약 하나를 처리 (실패해도 다른 예약에 영향 없게)
@@ -725,6 +746,14 @@ function Invoke-Process {
     param($Sch)
     try { return (Process-Schedule $Sch) }
     catch {
+        # 일시적인 인터넷·GitHub 오류(끊김·5xx·한도)면 실패로 적지 않고 잠시 뒤 다시 (최대 10번). 결과 파일 읽기·쓰기에서만 이런 오류가 새어 나온다(게시 단계 오류는 안에서 처리됨)
+        $h = 0; if ($_.Exception.Data['http']) { $h = [int]$_.Exception.Data['http'] }
+        $rk = [string]$Sch['id']
+        if (($h -eq 0 -or $h -ge 500 -or $h -eq 429 -or $h -eq 403) -and $Wait -and ([int]$script:ProcRetry[$rk]) -lt 10) {
+            $script:ProcRetry[$rk] = [int]$script:ProcRetry[$rk] + 1
+            Write-Msg ('예약 처리 중 일시 오류, 잠시 뒤 다시 (' + $rk + ' ' + $script:ProcRetry[$rk] + '/10): ' + [string]$_.Exception.Message)
+            return 'skipped'
+        }
         Write-Msg ('예약 처리 중 문제 (' + [string]$Sch['id'] + '): ' + [string]$_.Exception.Message)
         $script:Alert = $true
         try {
@@ -791,6 +820,9 @@ function Dispatch-Self {
         try {
             Call-Api -Method POST -Url "https://api.github.com/repos/$Repo/actions/workflows/scheduled-publish.yml/dispatches" -Headers (Get-GhHeaders) -JsonBody $body -TimeoutSec 30 | Out-Null
             Write-Msg ("다음 실행을 불렀어요 (mode=$RunMode, wait=$WaitFlag)")
+            $script:Dispatched = $true
+            # 워크플로 안전장치 단계가 "이미 불렀다"를 알도록 표시 파일을 남긴다 (중복 호출 방지)
+            try { $fp = Get-FlagPath; if ($fp) { [System.IO.File]::WriteAllText($fp, (Get-Now).ToString('o'), $Utf8) } } catch {}
             return $true
         } catch {
             Write-Msg ("다음 실행을 부르지 못했어요 ($i/4): " + [string]$_.Exception.Message + ' (http ' + [string]$_.Exception.Data['http'] + ')')
@@ -808,9 +840,11 @@ function Run-Publish {
     if ($Wait -and -not $Mock) { try { $snap = Get-ScheduleSnapshot $true } catch { $snap = $null } }   # 가장 새 목록부터 (내려받은 폴더는 옛것일 수 있음)
     if ($null -eq $snap) { $snap = Get-ScheduleSnapshot $false }
     Write-Msg ('예약 파일 ' + @($snap).Count + '개 확인')
-    $remoteFails = 0; $round = 0; $lastMsg = $null; $handoff = $false
+    $remoteFails = 0; $round = 0; $lastMsg = $null; $handoff = $false; $nextRead = $null
+    if ($Mock -and $FailAt -eq 'fatal') { $script:LastSnap = $snap; throw (New-Err -Message '모의: 치명적 예외') }
     while ($true) {
         $round++
+        $script:LastSnap = $snap
         $cloud = @()
         foreach ($it in @($snap)) {
             $s = $it.sch
@@ -847,7 +881,8 @@ function Run-Publish {
             if ($null -eq $nextWhen) { $nextWhen = $c.when }
             if (($c.when - $now).TotalMinutes -gt $WaitWindowMin) { break }    # 아직 멀다: 표시 없이 지켜보기만
             if ($startAt -gt $hard) { break }
-            $m = Mark-Waiting $c.sch $c.when
+            try { $m = Mark-Waiting $c.sch $c.when }
+            catch { Write-Msg ('기다림 표시를 못 남겼어요(그래도 계속 기다려요): ' + [string]$_.Exception.Message); $m = 'ok' }
             if ($m -eq 'ok') { $target = $c; break }
             if ($m -eq 'other') { $hold = $true; break }             # 끊긴 실행의 흔적(15분 안): 흔적이 낡을 때까지 지켜봤다가 이어받는다
             $script:NoWait[$c.key] = $m
@@ -869,29 +904,136 @@ function Run-Publish {
             $lastMsg = Get-Now
         }
         Wait-Sec $sleep
-        # 3) 기다리는 동안 바뀐 것(취소·시간 변경·새 예약)을 보관함에서 다시 읽는다
-        try { $snap = Get-ScheduleSnapshot $true; $remoteFails = 0 }
-        catch {
-            $remoteFails++
-            Write-Msg ('예약 파일을 다시 읽지 못했어요 (' + $remoteFails + '번째): ' + [string]$_.Exception.Message)
-            if ($remoteFails -ge 4) { Write-Msg '계속 읽지 못해 기다리기를 멈춰요 (다음 실행이 이어받아요).'; $script:Alert = $true; break }
+        # 4) 기다리는 동안 바뀐 것(취소·시간 변경·새 예약)을 보관함에서 다시 읽는다.
+        #    못 읽어도 멈추지 않는다(2026-11-05 수리): 이전 목록으로 계속 기다리고, 4번 넘게 연속 실패하면 읽는 간격만 늘린다(최대 5분). 정각 게시는 이전 목록으로도 한다.
+        if ($null -eq $nextRead -or (Get-Now) -ge $nextRead) {
+            try {
+                $snap = Get-ScheduleSnapshot $true
+                if ($remoteFails -gt 0) { Write-Msg ('예약 파일 읽기가 다시 됐어요 (연속 실패 ' + $remoteFails + '번 뒤)') }
+                $remoteFails = 0; $nextRead = $null
+            } catch {
+                $remoteFails++
+                $script:RereadFailsTotal++
+                if ($remoteFails -gt $script:RereadMaxStreak) { $script:RereadMaxStreak = $remoteFails }
+                $script:LastRereadError = Hide-Secrets ([string]$_.Exception.Message + ' (http ' + [string]$_.Exception.Data['http'] + ')')
+                Write-Msg ('예약 파일을 다시 읽지 못했어요 (' + $remoteFails + '번째 연속) - 이전 목록으로 계속 기다려요: ' + [string]$_.Exception.Message)
+                if ($remoteFails -ge 4) { $nextRead = (Get-Now).AddSeconds([math]::Min(300, 60 * ($remoteFails - 3))) }
+                # 원인을 인증 없이 볼 수 있게 results/_relay.json 에 남긴다 (10분에 한 번만)
+                if ($null -eq $script:RereadDiagAt -or ((Get-Now) - $script:RereadDiagAt).TotalMinutes -ge 10) { $script:RereadDiagAt = Get-Now; Write-RelayDiag 'reread-failing' }
+            }
         }
     }
     Release-Waits ''
     if ($handoff) {
         Write-Msg ('바통 넘기기: 이 실행이 ' + [int]((Get-Now) - $start).TotalMinutes + '분 돌았어요. 다음 실행을 불러요.')
-        if (-not (Dispatch-Self 'run' 'true')) {
-            Write-Msg '다음 실행을 부르지 못했어요. 보관함 예약 확인(5분 간격 예비)이나 예약 파일 저장 때 다시 시작돼요.'
+        $script:EndReason = 'handoff'
+    }
+}
+
+# ---------- 사슬 끊김 방지 (2026-11-05) ----------
+# 표시 파일 위치: 워크플로가 RELAY_FLAG 로 알려 줌. 모의 시험은 보관함 폴더의 relay.flag
+function Get-FlagPath {
+    if ($env:RELAY_FLAG) { return [string]$env:RELAY_FLAG }
+    if ($Mock) { return (Join-Path $Base 'relay.flag') }
+    return ''
+}
+# 앞으로 48시간 안(또는 방금 지난 60분 안)에 올릴 클라우드 예약이 남았나. 목록을 모르면(null) "있다"고 본다 (확실하지 않으면 사슬을 잇는다)
+function Test-MoreWork {
+    param($Snap)
+    if ($null -eq $Snap) { return $true }
+    $now = Get-Now
+    foreach ($it in @($Snap)) {
+        $s = $it.sch
+        $sid = [string]$s['id']
+        if ($sid -notmatch '^SCH-\d{14}(-\d+)?$' -or [string]$s['executor'] -ne 'cloud' -or [string]$s['status'] -ne 'scheduled') { continue }
+        $att = 1; if ($s['attempt']) { $att = [int]$s['attempt'] }
+        if ($script:Finished.ContainsKey("$sid|$att")) { continue }
+        $w = Get-When $s
+        if ($null -eq $w) { continue }
+        $min = ($w - $now).TotalMinutes
+        if ($min -gt $RelayWindowMin -or $min -lt (-1 * $LateLimitMin)) { continue }
+        return $true
+    }
+    return $false
+}
+# 가장 가까운 앞으로의 예약 시작 시각까지 남은 초 (없으면 큰 수)
+function Get-SecsToNext {
+    param($Snap)
+    if ($null -eq $Snap) { return 99999 }
+    $best = 99999.0; $now = Get-Now
+    foreach ($it in @($Snap)) {
+        $s = $it.sch
+        if ([string]$s['executor'] -ne 'cloud' -or [string]$s['status'] -ne 'scheduled') { continue }
+        $w = Get-When $s
+        if ($null -eq $w) { continue }
+        $sec = ($w.AddSeconds(-$LeadSec) - $now).TotalSeconds
+        if ($sec -gt 0 -and $sec -lt $best) { $best = $sec }
+    }
+    return $best
+}
+# 끝났을 때 결과·이유·오류를 공개 파일에 남긴다 (비밀 값 없음, 인증 없이 raw 주소로 읽을 수 있음)
+function Write-RelayDiag {
+    param([string]$Reason, [bool]$Dispatched = $false, [int]$DelaySec = 0, [int]$Streak = 0)
+    $o = [ordered]@{
+        kind = 'relay'; runId = $RunId; mode = $Mode; wait = [bool]$Wait; reason = $Reason
+        startedAt = $script:StartedAtZ; endedAt = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ')
+        error = (Hide-Secrets $script:EndError); dispatched = [bool]($Dispatched -or $script:Dispatched); delaySec = $DelaySec; errStreak = $Streak
+        rereadFailsTotal = $script:RereadFailsTotal; rereadMaxConsecutive = $script:RereadMaxStreak; lastRereadError = $script:LastRereadError
+        alert = [bool]$script:Alert; runUrl = $(if ($env:GITHUB_RUN_ID) { "https://github.com/$Repo/actions/runs/$($env:GITHUB_RUN_ID)" } else { '' })
+        mock = [bool]$Mock
+    }
+    try { Save-Result '_relay' $o } catch { Write-Msg ('진단 파일(_relay.json)을 쓰지 못했어요: ' + [string]$_.Exception.Message) }
+}
+# 끝날 때 마지막 점검: 어떤 이유로 끝났든 남은 예약이 있으면 다음 실행을 부른다 (기다리는 사슬 실행에만 해당)
+function Finish-Relay {
+    if (-not $Wait -or $Mode -ne 'run') { return }
+    $reason = $script:EndReason
+    $streak = 0; $delay = 0; $do = $false
+    if ($reason -eq 'fatal') {
+        $prev = $null; try { $prev = Load-Result '_relay' } catch {}
+        $streak = 1; if ($prev -and $prev['errStreak']) { $streak = [int]$prev['errStreak'] + 1 }
+        $snap = $script:LastSnap
+        if ($null -eq $snap) { try { $snap = Get-ScheduleSnapshot $true } catch { $snap = $null } }
+        $do = (Test-MoreWork $snap)
+        if ($do) {
+            # 무한 즉시 반복 방지: 오류가 이어질수록 오래(90초~10분) 쉬었다가 부르되, 다음 예약 시각을 넘기지 않게
+            $delay = [int][math]::Min(600, 60 + 30 * $streak)
+            $toNext = Get-SecsToNext $snap
+            $delay = [int][math]::Max(0, [math]::Min($delay, $toNext - 60))
+        }
+    } elseif ($reason -eq 'handoff') { $do = $true }
+    $ok = $true
+    if ($do) {
+        if ($delay -gt 0) { Write-Msg ("오류로 끝났지만 남은 예약이 있어서 $delay 초 쉬었다가 다음 실행을 불러요.") ; Wait-Sec $delay }
+        $ok = Dispatch-Self 'run' 'true'
+        if (-not $ok) {
+            Write-Msg '다음 실행을 부르지 못했어요. 워크플로 안전장치 단계(또는 예약 파일 저장 때·예비 시계)가 다시 시도해요.'
             $script:Alert = $true
         }
-    }
+    } else { Write-Msg ('다음 실행은 부르지 않아요 (' + $(if ($reason) { $reason + ' - 남은 예약 없음' } else { '정상 종료 - 남은 예약 없음' }) + ').') }
+    Write-RelayDiag $(if ($reason) { $reason } else { 'normal' }) $false $delay $streak
+}
+# 워크플로 안전장치(if: always()) 단계: 위 일꾼이 실패·제한시간 초과·강제 종료로 Finish-Relay 까지 못 갔을 때, 아직 안 불렀고 남은 예약이 있으면 부른다
+function Run-SafetyRelay {
+    $fp = Get-FlagPath
+    if ($fp -and (Test-Path -LiteralPath $fp)) { Write-Msg '안전장치: 이미 다음 실행을 불렀어요 - 할 일 없음.'; return }
+    $snap = $null
+    try { $snap = Get-ScheduleSnapshot $true } catch { Write-Msg ('안전장치: 예약 목록을 읽지 못해 "있다"고 보고 이어요: ' + [string]$_.Exception.Message); $snap = $null }
+    $script:EndReason = 'safety'
+    if (-not (Test-MoreWork $snap)) { Write-Msg '안전장치: 남은 예약이 없어서 다음 실행을 부르지 않아요.'; Write-RelayDiag 'safety-nowork'; return }
+    $delay = [int][math]::Max(0, [math]::Min(90, (Get-SecsToNext $snap) - 60))
+    if ($delay -gt 0) { Write-Msg "안전장치: 앞 실행이 비정상으로 끝났어요. $delay 초 쉬었다가 다음 실행을 불러요."; Wait-Sec $delay }
+    if (-not (Dispatch-Self 'run' 'true')) { Write-Msg '안전장치: 다음 실행을 부르지 못했어요.'; $script:Alert = $true }
+    Write-RelayDiag 'safety' $false $delay 0
 }
 
 # ---------- 본 흐름 ----------
 Write-Msg "클라우드 예약 확인 시작 (mode=$Mode, mock=$([bool]$Mock))"
+$script:StartedAtZ = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ')
 try {
     if ($Mock -and $MockEvents) { $script:Events = @(Read-Json ([System.IO.File]::ReadAllText($MockEvents, $Utf8))) }
     if ($Mode -eq 'check') { Run-Check }
+    elseif ($Mode -eq 'safety-relay') { Run-SafetyRelay }
     elseif ($Mode -eq 'relay-test') {
         # 이어달리기 점검: 아무것도 올리지 않고, 스스로를 점검(check) 모드로 한 번 불러 본다. 새 실행이 생기고 results/_check.json 의 trigger 칸에 기록된다
         if (Dispatch-Self 'check' 'false') { Write-Msg '이어달리기 점검: 다음 실행을 불렀어요. Actions 탭에 새 실행(check)이 생기면 성공이에요.' }
@@ -901,8 +1043,12 @@ try {
 } catch {
     Write-Msg ('치명적 문제: ' + [string]$_.Exception.Message)
     $script:Alert = $true
+    $script:EndReason = 'fatal'
+    $script:EndError = Hide-Secrets (([string]$_.Exception.Message) + ' @ ' + [string]$_.InvocationInfo.PositionMessage)
     try { Release-Waits '' } catch {}
 }
+# 어떻게 끝났든(정상·한도·치명적 오류) 마지막에 "다음 실행을 불러야 하나" 점검 (사슬 끊김 방지)
+try { Finish-Relay } catch { Write-Msg ('끝 점검 중 문제: ' + [string]$_.Exception.Message); $script:Alert = $true }
 if ($script:Alert) { Write-Msg '확인이 필요한 일이 있어요 (실패 알림용으로 이 실행을 실패로 표시합니다).'; exit 1 }
 Write-Msg '끝'
 exit 0
