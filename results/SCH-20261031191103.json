@@ -15,9 +15,9 @@
   "resumes": 0,
   "error": null,
   "finishedAt": "2026-11-02T19:37:27Z",
-  "updatedAt": "2026-11-04T10:24:40Z",
+  "updatedAt": "2026-11-04T10:30:43Z",
   "waitRun": "41807391073-1",
-  "heartbeat": "2026-11-04T10:24:40Z",
+  "heartbeat": "2026-11-04T10:30:43Z",
   "waitingSince": "2026-11-04T10:00:28Z",
   "waitingFor": "2026-11-04T22:00:00"
 }
