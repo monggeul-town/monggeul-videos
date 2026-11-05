@@ -1,11 +1,13 @@
 ﻿# 요약: 클라우드(GitHub Actions) 예약 게시 일꾼. 깨어나 "시각이 된 예약"을 인스타 릴스 -> 스레드 순서로 올린다.
 #       (PC의 09_도구\자동게시.ps1 과 같은 순서·같은 API. 모양만 클라우드용으로 단순화)
-#       -Wait(push·cron·바통 넘기기 실행에서 켜짐) = 이어달리기(2026-11-03): 앞으로 48시간 안의 예약이 있는 동안 끝내지 않고 기다렸다가 그 시각(약 20초 전 시작 -> 정각 게시)에 올린다.
+#       -Wait(push·cron·바통 넘기기 실행에서 켜짐) = 이어달리기(2026-11-03): 앞으로 14일 안에 남은 클라우드 예약이 하나라도 있는 동안 끝내지 않고 기다렸다가 그 시각(약 20초 전 시작 -> 정각 게시)에 올린다.
 #       300분(소프트)~335분(하드) 돌면 스스로를 workflow_dispatch 로 다시 불러 바통을 넘기고 끝낸다(남은 예약이 없으면 멈춤). -Mode relay-test = 스스로 부르기 점검.
 #       기다리는 동안 예약 파일을 1~2분마다 다시 읽어 취소·시간 변경을 반영하고, 결과 파일에 "waiting"(심장박동 5분마다)을 적어 다른 실행이 건너뛰게 한다.
 #       사슬 끊김 수리(2026-11-05): 11/4 에 다시 읽기 4번 실패 -> 바통 없이 끝나 사슬이 끊겼다. 이제 (1) 다시 읽기가 계속 실패해도 멈추지 않고 이전 목록으로 기다리며 더 긴 간격으로 재시도,
-#       (2) 어떤 이유로 끝나든(치명적 오류 등) 앞으로 48시간 안에 올릴 예약이 있으면 반드시 다음 실행을 부름(오류 때는 1~10분 쉬었다가), (3) 워크플로의 안전장치 단계가 -Mode safety-relay 로
+#       (2) 어떤 이유로 끝나든(치명적 오류 등) 앞으로 14일 안에 올릴 예약이 있으면 반드시 다음 실행을 부름(오류 때는 1~10분 쉬었다가), (3) 워크플로의 안전장치 단계가 -Mode safety-relay 로
 #       이 스크립트가 실패·제한시간 초과로 끝났어도 다시 한 번 확인해서 부름, (4) 끝날 때마다 results/_relay.json 에 이유·오류를 남김(비밀 값 없음).
+#       놓친 예약 자동 미루기(2026-11-05): 놓침(60분 초과)이거나 "아무것도 올리기 전에" 실패(일시 문제)한 예약을 다음 빈 날(다른 클라우드 예약이 없는 날) 같은 시각으로 옮겨 다시 예약 상태로 만든다.
+#       일부라도 올라갔으면(중복 위험)·3번을 넘으면·예약 파일에 autoShift=false 면·열쇠/권한/영상 문제면 옮기지 않고 알림만. 옮김은 schedules/ 파일(시각·attempt+1·shiftCount)과 results/ 파일(shifts)에 남고 _relay.json(recentShifts)에도 보인다.
 # 놓는 곳: 보관함(monggeul-videos)의 scripts/cloud-publish.ps1  (PowerShell 5.1 / 7 모두 동작)
 # 인자: -Mode run(기본, 올리기) | check(읽기 전용 점검) / -Wait / -Mock -RepoDir 폴더 (모의: 인터넷 요청 없이 폴더 안 파일로만 시험)
 # 열쇠(Secrets)는 환경변수로만 받는다: INSTAGRAM_TOKEN THREADS_TOKEN INSTAGRAM_USER_ID THREADS_USER_ID (+ 자동 제공 GITHUB_TOKEN, GITHUB_REPOSITORY)
@@ -23,10 +25,14 @@ param(
     [switch]$SimPs7,          # 모의 시험 전용: PowerShell 7 의 날짜 자동 변환을 흉내
     [string]$MockEvents = '', # 모의 시험 전용: 기다리는 동안 일어날 일(취소·시간 변경·끊김·예약 추가)을 적은 JSON 파일
     [int]$WaitWindowMin = 180,    # 시각이 이 안에 들어온 예약은 "미리 와서 기다리는 중" 표시(결과 파일 waiting)를 남긴다
-    [int]$RelayWindowMin = 2880,  # 이어달리기: 앞으로 이 시간(48시간) 안에 시각이 되는 예약이 있으면 사슬을 끊지 않고 계속 기다린다
+    [int]$RelayWindowMin = 20160, # 이어달리기: 앞으로 이 시간(14일) 안에 시각이 되는 예약이 하나라도 있으면 사슬을 끊지 않고 계속 기다린다 (2026-11-05: 48시간에서 늘림 - 자동 미루기로 사흘 뒤로 옮겨져도 사슬이 안 끊기게. 공개 보관함이라 기다리는 비용 0. 예약 3시간 전부터 waiting 표시는 WaitWindowMin 그대로)
     [int]$SoftMin = 300,          # 이 실행이 시작한 지 이만큼(분) 지나면, 다음 예약이 30분 넘게 남았을 때 다음 실행에 바통을 넘긴다
     [int]$HardMin = 335,          # 무조건 바통을 넘기는 한계(분). 워크플로 제한시간(350분, GitHub 작업 최대 360분)보다 짧게
     [int]$HandoffGuardMin = 30,   # 소프트 한계 뒤라도 다음 예약이 이 시간(분) 안이면 끝까지 올리고 넘긴다
+    [int]$ShiftMax = 3,           # 놓친 예약 자동 미루기: 한 예약을 최대 이만큼만 미룬다(넘으면 알림만)
+    [int]$ShiftMaxLateMin = 2160, # 예약 시각에서 이보다(36시간) 오래 지난 놓침은 자동으로 미루지 않는다(오래된 낡은 예약 보호)
+    [int]$ShiftHorizonDays = 14,  # 빈 날을 찾는 범위(원래 날짜 다음 날부터 이만큼)
+    [int]$ShiftMinLeadMin = 30,   # 옮긴 시각은 지금부터 이 시간(분) 이상 뒤여야 함
     [int]$PollSec = 90,
     [int]$LeadSec = 20        # 인스타 컨테이너 준비(약 20초)를 감안해 이만큼 먼저 시작 -> 게시가 정각 무렵
 )
@@ -68,6 +74,7 @@ $script:EndReason = ''    # '' = 정상(남은 예약 없음) | handoff = 한도
 $script:EndError = ''
 $script:RereadFailsTotal = 0; $script:RereadMaxStreak = 0; $script:LastRereadError = ''; $script:RereadDiagAt = $null
 $script:Dispatched = $false
+$script:ShiftedNow = @()  # 이 실행에서 자동으로 미룬 예약들 (끝날 때 results/_relay.json 에 남김)
 $script:StartedAtZ = ''
 function Get-Now {
     if ($Mock) {
@@ -199,7 +206,8 @@ function Mock-Api {
     }
     if ($Url -match '^https://graph\.instagram\.com/[^/]+/media\?') { return (& $ok ([pscustomobject]@{ data = @() })) }
     if ($Url -match '^https://graph\.instagram\.com/[^/]+/media$') {
-        if ($FailAt -eq 'ig_container') { throw (New-Err -Message '모의 실패 (ig_container)' -Code 'MOCK' -Http 400) }
+        if ($FailAt -eq 'ig_container' -or $FailAt -eq 'both_container') { throw (New-Err -Message '모의 실패 (ig_container)' -Code 'MOCK' -Http 400) }
+        if ($FailAt -eq 'both_auth') { throw (New-Err -Message 'Invalid OAuth access token (모의)' -Code '190' -Http 401) }
         return (& $ok ([pscustomobject]@{ id = 'mock_ig_container_1' }))
     }
     if ($Url -match '^https://graph\.instagram\.com/mock_ig_container_1') {
@@ -212,7 +220,11 @@ function Mock-Api {
         return (& $ok ([pscustomobject]@{ id = 'mock_th_media_1' }))
     }
     if ($Url -match '^https://graph\.threads\.net/[^/]+/threads\?') { return (& $ok ([pscustomobject]@{ data = @() })) }
-    if ($Url -match '^https://graph\.threads\.net/[^/]+/threads$') { return (& $ok ([pscustomobject]@{ id = 'mock_th_container_1' })) }
+    if ($Url -match '^https://graph\.threads\.net/[^/]+/threads$') {
+        if ($FailAt -eq 'both_container') { throw (New-Err -Message '모의 실패 (th_container)' -Code 'MOCK' -Http 400) }
+        if ($FailAt -eq 'both_auth') { throw (New-Err -Message 'Invalid OAuth access token (모의)' -Code '190' -Http 401) }
+        return (& $ok ([pscustomobject]@{ id = 'mock_th_container_1' }))
+    }
     if ($Url -match '^https://graph\.threads\.net/mock_th_container_1') { return (& $ok ([pscustomobject]@{ status = 'FINISHED' })) }
     if ($Url -match '^https://graph\.threads\.net/mock_th_media_1') { return (& $ok ([pscustomobject]@{ permalink = 'https://example.com/dryrun/threads-post' })) }
     throw (New-Err -Message "모의 모드: 알 수 없는 주소 ($Method)" -Code 'MOCK')
@@ -593,6 +605,148 @@ function Reset-ForNewAttempt {
         if ($so -and $so['status'] -in @('failed', 'running')) { $so['status'] = 'pending' }
     }
 }
+# ---------- 놓친 예약 자동 미루기 (2026-11-05) ----------
+# 놓침(60분 초과) 또는 "아무것도 올리기 전에" 실패한 예약을 다음 빈 날의 같은 시각으로 옮겨 다시 예약 상태로 만든다(시도 번호 +1).
+# 일부라도 올라갔거나(중복 위험)·최대 횟수를 넘었거나·끄기로 한 예약·열쇠/권한/영상 문제로 실패한 예약은 옮기지 않고 알림만 한다.
+# 옮김의 진실은 보관함 schedules/예약.json(시각·시도 번호·shiftCount). results/예약.json 의 shifts 에도 기록해 PC(업무 사이트)가 읽어 반영한다.
+function Test-AutoShiftOn {
+    param($Sch)
+    if (-not $Sch.Contains('autoShift')) { return $true }       # 옛 예약(칸 없음)은 켜짐
+    $v = $Sch['autoShift']
+    if ($null -eq $v) { return $true }
+    if ($v -is [bool]) { return $v }
+    return (([string]$v).ToLower() -notin @('false', '0', 'off', 'no'))
+}
+# 하루 미룬다고 고쳐지는 오류인가 (열쇠·권한·다른 계정·영상 문제는 아님)
+function Test-RetryableErr {
+    param($E)
+    if (-not $E) { return $true }
+    $code = [string]$E['code']; $http = 0; if ($E['http']) { $http = [int]$E['http'] }; $msg = [string]$E['message']
+    if ($code -in @('HASH', 'ACCOUNT')) { return $false }
+    if ($code -match '^190' -or $http -eq 401 -or $msg -match 'access token|OAuth') { return $false }
+    if ($code -match '^(10|200|3)(/|$)' -or $http -eq 403) { return $false }
+    if ($msg -match '영상 경로|영상 지문|보관함에 영상이 없어요|영상이 예약할 때') { return $false }
+    return $true
+}
+function Test-RetryableFailure {
+    param($Res)
+    $errs = @()
+    if ($Res['error']) { $errs += , $Res['error'] }
+    foreach ($k in @('instagram', 'threads')) { $s = $Res['steps'][$k]; if ($s -and $s['error']) { $errs += , $s['error'] } }
+    foreach ($e in $errs) { if (-not (Test-RetryableErr $e)) { return $false } }
+    return $true
+}
+function Test-NothingPosted {
+    param($Res)
+    foreach ($k in @('instagram', 'threads')) { $s = $Res['steps'][$k]; if ($s -and [string]$s['status'] -in @('done', 'uncertain', 'publishing')) { return $false } }
+    return $true
+}
+# 원래 날짜 다음 날부터, 다른 클라우드 예약(scheduled)이 없는 첫 날의 같은 시각(한국시간 글자). 못 찾으면 $null
+function Find-NextFreeDay {
+    param($Sch)
+    $when = Get-When $Sch
+    if ($null -eq $when) { return $null }
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $kst = $when.AddHours(9)
+    $busy = @{}
+    foreach ($it in @($script:LastSnap)) {
+        $s = $it.sch
+        if (-not $s -or [string]$s['id'] -eq [string]$Sch['id']) { continue }
+        if ([string]$s['executor'] -ne 'cloud' -or [string]$s['status'] -ne 'scheduled') { continue }
+        $w = Get-When $s
+        if ($null -eq $w) { continue }
+        $busy[$w.AddHours(9).ToString('yyyy-MM-dd', $inv)] = $true
+    }
+    $now = Get-Now
+    for ($k = 1; $k -le ($ShiftHorizonDays + 1); $k++) {
+        $cand = $kst.Date.AddDays($k) + $kst.TimeOfDay
+        if ($busy.ContainsKey($cand.ToString('yyyy-MM-dd', $inv))) { continue }
+        if ($cand.AddHours(-9) -lt $now.AddMinutes($ShiftMinLeadMin)) { continue }
+        return $cand.ToString('yyyy-MM-ddTHH:mm:ss', $inv)
+    }
+    return $null
+}
+function Format-KstShort {
+    param([string]$T)
+    $d = [datetime]::MinValue
+    if ([datetime]::TryParseExact($T, 'yyyy-MM-ddTHH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$d)) { return ($d.Month.ToString() + '월 ' + $d.Day.ToString() + '일 ' + $d.ToString('HH:mm', [System.Globalization.CultureInfo]::InvariantCulture)) }
+    return $T
+}
+# 보관함의 예약 파일을 새 시각으로 고친다 (읽은 뒤 그 사이 바뀌었으면 'changed' = 안 옮김). 반환 'ok' | 'changed' | 'gone'. 저장 충돌(sha)이면 던짐 -> 호출한 쪽이 "옮기지 않음" 처리
+function Update-ScheduleFileForShift {
+    param($Sch, [string]$NewWhen, [int]$NewAttempt, [int]$NewCount)
+    $id = [string]$Sch['id']; $name = $id + '.json'
+    $cur = $null; $sha = ''
+    if ($Mock) {
+        $p = Join-Path $SchedDir $name
+        if (-not (Test-Path -LiteralPath $p)) { return 'gone' }
+        $cur = Read-Json ([System.IO.File]::ReadAllText($p, $Utf8).TrimStart([char]0xFEFF))
+    } else {
+        $r = Call-ApiRead -Url "https://api.github.com/repos/$Repo/contents/schedules/$name" -Headers (Get-GhHeaders)
+        $sha = [string]$r.Json['sha']
+        $bytes = [Convert]::FromBase64String((([string]$r.Json['content']) -replace '\s', ''))
+        $cur = Read-Json ($Utf8.GetString($bytes).TrimStart([char]0xFEFF))
+    }
+    if (-not $cur) { return 'gone' }
+    $ca = 1; if ($cur['attempt']) { $ca = [int]$cur['attempt'] }
+    $sa = 1; if ($Sch['attempt']) { $sa = [int]$Sch['attempt'] }
+    if ([string]$cur['status'] -ne 'scheduled' -or $ca -ne $sa -or [string]$cur['scheduledAt'] -ne [string]$Sch['scheduledAt']) { return 'changed' }
+    $cur['scheduledAt'] = $NewWhen; $cur['attempt'] = $NewAttempt; $cur['shiftCount'] = $NewCount; $cur['status'] = 'scheduled'
+    $cur['lastShift'] = [ordered]@{ at = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ'); from = [string]$Sch['scheduledAt']; to = $NewWhen }
+    $json = $cur | ConvertTo-Json -Depth 10
+    if ($Mock) { [System.IO.File]::WriteAllText((Join-Path $SchedDir $name), $json, $Utf8); return 'ok' }
+    $body = [ordered]@{ message = "auto-shift $id"; content = [Convert]::ToBase64String($Utf8.GetBytes($json)); sha = $sha }
+    Call-Api -Method PUT -Url "https://api.github.com/repos/$Repo/contents/schedules/$name" -Headers (Get-GhHeaders) -JsonBody ($body | ConvertTo-Json -Compress) -TimeoutSec 60 | Out-Null
+    return 'ok'
+}
+# 옮긴다. 성공하면 $true (메모리의 $Sch 도 새 시각·시도 번호로 바꿔, 이어달리기 중인 이 실행이 새 시각을 기다림). 못 옮기면 이유를 결과 파일(shiftNote)·오류 글에 덧붙이고 $false
+function Try-AutoShift {
+    param($Sch, $Res, [string]$Reason, [double]$LateMin = 0)
+    $id = [string]$Sch['id']
+    $note = ''; $newWhen = $null; $cnt = 0
+    try {
+        if ($Sch['shiftCount']) { $cnt = [int]$Sch['shiftCount'] }
+        if (-not (Test-AutoShiftOn $Sch)) { $note = '이 예약은 "놓치면 다음 빈 날로 자동 미루기"가 꺼져 있어서 옮기지 않았어요.' }
+        elseif ($cnt -ge $ShiftMax) { $note = ('자동 미루기를 이미 ' + $cnt + '번 해서 더 옮기지 않아요. 시간을 직접 정해 주세요.') }
+        elseif (-not (Test-NothingPosted $Res)) { $note = '일부가 이미 올라가 있어서(중복 게시 방지) 자동으로 옮기지 않았어요. 인스타·스레드 앱에서 확인해 주세요.' }
+        elseif ($Reason -eq 'missed' -and $LateMin -gt $ShiftMaxLateMin) { $note = '예약 시각에서 너무 오래(36시간 넘게) 지나서 자동으로 옮기지 않았어요.' }
+        elseif ($Reason -eq 'failed' -and -not (Test-RetryableFailure $Res)) { $note = '하루 미룬다고 해결되는 문제가 아니어서(열쇠·권한·영상 문제) 자동으로 옮기지 않았어요.' }
+        else {
+            $newWhen = Find-NextFreeDay $Sch
+            if (-not $newWhen) { $note = ('앞으로 ' + $ShiftHorizonDays + '일 안에 빈 날을 찾지 못해서 옮기지 않았어요.') }
+        }
+        if ($newWhen) {
+            $att = 1; if ($Sch['attempt']) { $att = [int]$Sch['attempt'] }
+            $u = Update-ScheduleFileForShift $Sch $newWhen ($att + 1) ($cnt + 1)
+            if ($u -ne 'ok') { $note = '예약 파일이 그 사이에 바뀌었거나 없어져서 자동으로 옮기지 않았어요.'; $newWhen = $null }
+        }
+    } catch {
+        $note = ('새 시각을 보관함에 저장하지 못해서 자동으로 옮기지 않았어요: ' + (Hide-Secrets ([string]$_.Exception.Message)))
+        $newWhen = $null
+    }
+    if ($newWhen) {
+        $old = [string]$Sch['scheduledAt']
+        $att = 1; if ($Sch['attempt']) { $att = [int]$Sch['attempt'] }
+        $Sch['scheduledAt'] = $newWhen; $Sch['attempt'] = $att + 1; $Sch['shiftCount'] = $cnt + 1
+        $rec = [ordered]@{ at = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ'); reason = $Reason; fromAt = $old; toAt = $newWhen; attempt = ($att + 1); count = ($cnt + 1) }
+        $list = @(); if ($Res['shifts']) { $list = @($Res['shifts']) }
+        $list += , $rec
+        $Res['shifts'] = $list
+        $msg = ('자동으로 ' + (Format-KstShort $newWhen) + ' (한국 시간)로 옮겼어요 (' + ($cnt + 1) + '/' + $ShiftMax + '번째).')
+        $Res['shiftNote'] = $msg
+        if ($Res['error']) { $Res['error']['friendly'] = ([string]$Res['error']['friendly'] + ' → ' + $msg) }
+        $script:ShiftedNow += , ([ordered]@{ id = $id; ep = [string]$Sch['ep']; reason = $Reason; fromAt = $old; toAt = $newWhen; attempt = ($att + 1); count = ($cnt + 1) })
+        Add-Log $Res ('놓친 예약 자동 미루기: ' + $old + ' -> ' + $newWhen + ' (' + $Reason + ')')
+        return $true
+    }
+    if ($note) {
+        $Res['shiftNote'] = $note
+        if ($Res['error']) { $Res['error']['friendly'] = ([string]$Res['error']['friendly'] + ' (' + $note + ')') }
+        Add-Log $Res ('자동 미루기 안 함: ' + $note)
+    }
+    return $false
+}
+
 # 반환: 'notdue' | 'finished'(이미 끝난 시도) | 'skipped'(다른 실행이 기다리는 중 등) | 'processed'(이번에 처리함)
 function Process-Schedule {
     param($Sch)
@@ -647,6 +801,7 @@ function Process-Schedule {
         $res['error'] = [ordered]@{ friendly = ('예약 시각보다 ' + [int]$late + '분 늦게 확인돼서(60분 초과) 올리지 않았어요. 시간을 바꿔 다시 예약하거나 직접 올려 주세요.'); message = 'late' }
         $res['finishedAt'] = $now.ToString('yyyy-MM-ddTHH:mm:ssZ')
         Add-Log $res "예약 시각 $([int]$late)분 초과 - 올리지 않음"
+        [void](Try-AutoShift $Sch $res 'missed' $late)      # 일부도 안 올라갔고 횟수가 남았으면 다음 빈 날 같은 시각으로 (실패해도 아래 알림은 그대로)
         Save-Result $id $res
         $script:Alert = $true
         return 'processed'
@@ -667,6 +822,7 @@ function Process-Schedule {
         $res['state'] = 'failed'; $res['error'] = Get-ErrInfo $_ 'video'
         $res['finishedAt'] = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ')
         $res['error']['friendly'] = [string]$res['error']['message']
+        [void](Try-AutoShift $Sch $res 'failed' 0)           # 영상 확인 단계 실패 = 아무것도 올리기 전. 일시 문제만 옮김(영상 지문·영상 없음은 안 옮김)
         Save-Result $id $res; $script:Alert = $true; return 'processed'
     }
     foreach ($t in $targets) {
@@ -688,8 +844,9 @@ function Process-Schedule {
     else { $res['state'] = 'failed' }
     if ($res['state'] -ne 'done') {
         $first = $failed[0]; if (-not $first) { $first = $targets[0] }
-        $res['error'] = [ordered]@{ step = $first; friendly = [string]$res['steps'][$first]['error']['friendly']; message = [string]$res['steps'][$first]['error']['message'] }
+        $res['error'] = [ordered]@{ step = $first; friendly = [string]$res['steps'][$first]['error']['friendly']; message = [string]$res['steps'][$first]['error']['message']; code = [string]$res['steps'][$first]['error']['code']; http = [int]$res['steps'][$first]['error']['http'] }
         $script:Alert = $true
+        if ($res['state'] -eq 'failed') { [void](Try-AutoShift $Sch $res 'failed' 0) }   # 아무것도 못 올리고 실패(일부 성공·불확실은 제외) -> 다음 빈 날로
     }
     $res['finishedAt'] = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ')
     Add-Log $res ('끝: ' + $res['state'])
@@ -840,7 +997,7 @@ function Run-Publish {
     if ($Wait -and -not $Mock) { try { $snap = Get-ScheduleSnapshot $true } catch { $snap = $null } }   # 가장 새 목록부터 (내려받은 폴더는 옛것일 수 있음)
     if ($null -eq $snap) { $snap = Get-ScheduleSnapshot $false }
     Write-Msg ('예약 파일 ' + @($snap).Count + '개 확인')
-    $remoteFails = 0; $round = 0; $lastMsg = $null; $handoff = $false; $nextRead = $null
+    $remoteFails = 0; $round = 0; $lastMsg = $null; $handoff = $false; $nextRead = $null; $shiftSeen = 0
     if ($Mock -and $FailAt -eq 'fatal') { $script:LastSnap = $snap; throw (New-Err -Message '모의: 치명적 예외') }
     while ($true) {
         $round++
@@ -868,6 +1025,8 @@ function Run-Publish {
             elseif ($r -eq 'skipped') { $hold = $true }
         }
         if (-not $Wait) { break }
+        # 방금 예약을 자동으로 다음 빈 날로 미뤘으면(위 $cloud 목록은 옛 시각) 목록을 새로 만들어 새 시각을 기다리게 한다
+        if ($script:ShiftedNow.Count -ne $shiftSeen) { $shiftSeen = $script:ShiftedNow.Count; continue }
         # 2) 앞으로 시각이 되는 다음 예약들 (이어달리기 한도 RelayWindowMin 안). 가까운 것(WaitWindowMin 안)은 "기다리는 중" 표시
         $now = Get-Now
         $target = $null
@@ -937,7 +1096,7 @@ function Get-FlagPath {
     if ($Mock) { return (Join-Path $Base 'relay.flag') }
     return ''
 }
-# 앞으로 48시간 안(또는 방금 지난 60분 안)에 올릴 클라우드 예약이 남았나. 목록을 모르면(null) "있다"고 본다 (확실하지 않으면 사슬을 잇는다)
+# 앞으로 14일 안(또는 방금 지난 60분 안)에 올릴 클라우드 예약이 남았나. 목록을 모르면(null) "있다"고 본다 (확실하지 않으면 사슬을 잇는다)
 function Test-MoreWork {
     param($Snap)
     if ($null -eq $Snap) { return $true }
@@ -974,7 +1133,13 @@ function Get-SecsToNext {
 # 끝났을 때 결과·이유·오류를 공개 파일에 남긴다 (비밀 값 없음, 인증 없이 raw 주소로 읽을 수 있음)
 function Write-RelayDiag {
     param([string]$Reason, [bool]$Dispatched = $false, [int]$DelaySec = 0, [int]$Streak = 0)
+    # 자동 미루기 기록: 이번 실행에서 옮긴 것 + 이전 기록 중 최근 10개 (공개 파일에서 "언제 무엇을 옮겼나" 확인용)
+    $recent = @()
+    try { $prevR = Load-Result '_relay'; if ($prevR -and $prevR['recentShifts']) { $recent = @($prevR['recentShifts']) } } catch {}
+    foreach ($sh in @($script:ShiftedNow)) { $recent += , ([ordered]@{ at = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ'); id = $sh['id']; ep = $sh['ep']; reason = $sh['reason']; fromAt = $sh['fromAt']; toAt = $sh['toAt']; attempt = $sh['attempt']; count = $sh['count'] }) }
+    if ($recent.Count -gt 10) { $recent = @($recent | Select-Object -Last 10) }
     $o = [ordered]@{
+        shiftedNow = @($script:ShiftedNow); recentShifts = $recent
         kind = 'relay'; runId = $RunId; mode = $Mode; wait = [bool]$Wait; reason = $Reason
         startedAt = $script:StartedAtZ; endedAt = (Get-Now).ToString('yyyy-MM-ddTHH:mm:ssZ')
         error = (Hide-Secrets $script:EndError); dispatched = [bool]($Dispatched -or $script:Dispatched); delaySec = $DelaySec; errStreak = $Streak
