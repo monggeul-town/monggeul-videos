@@ -7,11 +7,13 @@
   "state": "running",
   "steps": {
     "instagram": {
-      "status": "publishing",
+      "status": "done",
       "error": null,
       "containerId": "17892197862528701",
       "containerStatus": "FINISHED",
-      "containerCreatedAt": "2026-11-06T13:05:32Z"
+      "containerCreatedAt": "2026-11-06T13:05:32Z",
+      "mediaId": "18136805689660542",
+      "publishedAt": "2026-11-06T13:07:01Z"
     },
     "threads": {
       "status": "pending"
@@ -23,5 +25,5 @@
   "startedAt": "2026-11-06T13:05:29Z",
   "startedAtKst": "2026-11-06T22:05:29",
   "runId": "42205554757-1",
-  "updatedAt": "2026-11-06T13:06:54Z"
+  "updatedAt": "2026-11-06T13:07:01Z"
 }
