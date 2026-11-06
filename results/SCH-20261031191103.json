@@ -13,7 +13,8 @@
       "containerStatus": "FINISHED",
       "containerCreatedAt": "2026-11-06T12:59:43Z",
       "mediaId": "18104177135367097",
-      "publishedAt": "2026-11-06T13:01:12Z"
+      "publishedAt": "2026-11-06T13:01:12Z",
+      "permalink": "https://www.instagram.com/reel/DfZqcDZjjqd/"
     },
     "threads": {
       "status": "pending"
@@ -26,13 +27,14 @@
     "[10:49:04Z] 기다리기를 멈췄어요 (예약이 취소·변경됐거나 이 실행이 끝남)",
     "[16:07:27Z] 예약 시각 187분 초과 - 올리지 않음",
     "[10:49:31Z] 미리 와서 기다리는 중 (예약 2026-11-06T22:00:00 한국시간)",
-    "[12:59:41Z] 미리 와서 기다렸다가 시각에 시작 (예약 시각 대비 -19초)"
+    "[12:59:41Z] 미리 와서 기다렸다가 시각에 시작 (예약 시각 대비 -19초)",
+    "[13:01:13Z] 인스타 게시 완료"
   ],
   "mock": false,
   "resumes": 0,
   "error": null,
   "finishedAt": "2026-11-04T16:07:27Z",
-  "updatedAt": "2026-11-06T13:01:12Z",
+  "updatedAt": "2026-11-06T13:01:13Z",
   "waitingFor": "2026-11-06T22:00:00",
   "releasedAt": "2026-11-04T10:49:04Z",
   "startedAt": "2026-11-06T12:59:40Z",
