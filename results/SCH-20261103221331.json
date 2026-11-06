@@ -5,13 +5,24 @@
   "ep": "EP-036",
   "attempt": 2,
   "state": "running",
-  "steps": {},
+  "steps": {
+    "instagram": {
+      "status": "running",
+      "error": null,
+      "containerId": "17892197526528701",
+      "containerStatus": "IN_PROGRESS",
+      "containerCreatedAt": "2026-11-06T13:04:16Z"
+    },
+    "threads": {
+      "status": "pending"
+    }
+  },
   "log": "[16:07:31Z] 예약 시각 188분 초과 - 올리지 않음",
   "mock": false,
   "resumes": 0,
   "error": null,
   "finishedAt": "2026-11-04T16:07:30Z",
-  "updatedAt": "2026-11-06T13:04:13Z",
+  "updatedAt": "2026-11-06T13:04:16Z",
   "startedAt": "2026-11-06T13:04:13Z",
   "startedAtKst": "2026-11-06T22:04:13",
   "runId": "42205554757-1"
