@@ -5,7 +5,18 @@
   "ep": "EP-034",
   "attempt": 3,
   "state": "running",
-  "steps": {},
+  "steps": {
+    "instagram": {
+      "status": "running",
+      "error": null,
+      "containerId": "17892196443528701",
+      "containerStatus": "IN_PROGRESS",
+      "containerCreatedAt": "2026-11-06T13:01:58Z"
+    },
+    "threads": {
+      "status": "pending"
+    }
+  },
   "log": [
     "[19:37:30Z] 예약 시각 397분 초과 - 올리지 않음",
     "[16:07:29Z] 예약 시각 187분 초과 - 올리지 않음"
@@ -14,7 +25,7 @@
   "resumes": 0,
   "error": null,
   "finishedAt": "2026-11-04T16:07:29Z",
-  "updatedAt": "2026-11-06T13:01:56Z",
+  "updatedAt": "2026-11-06T13:01:58Z",
   "startedAt": "2026-11-06T13:01:55Z",
   "startedAtKst": "2026-11-06T22:01:55",
   "runId": "42205554757-1"
