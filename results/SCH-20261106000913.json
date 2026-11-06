@@ -1,0 +1,16 @@
+{
+  "kind": "result",
+  "executor": "cloud",
+  "scheduleId": "SCH-20261106000913",
+  "ep": "EP-038",
+  "attempt": 1,
+  "state": "running",
+  "steps": {},
+  "log": [],
+  "mock": false,
+  "resumes": 0,
+  "startedAt": "2026-11-06T13:05:29Z",
+  "startedAtKst": "2026-11-06T22:05:29",
+  "runId": "42205554757-1",
+  "updatedAt": "2026-11-06T13:05:30Z"
+}
