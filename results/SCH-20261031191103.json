@@ -18,10 +18,10 @@
   "resumes": 0,
   "error": null,
   "finishedAt": "2026-11-04T16:07:27Z",
-  "updatedAt": "2026-11-06T11:43:55Z",
+  "updatedAt": "2026-11-06T11:49:58Z",
   "waitingFor": "2026-11-06T22:00:00",
   "releasedAt": "2026-11-04T10:49:04Z",
   "waitRun": "42205554757-1",
-  "heartbeat": "2026-11-06T11:43:55Z",
+  "heartbeat": "2026-11-06T11:49:58Z",
   "waitingSince": "2026-11-06T10:49:31Z"
 }
