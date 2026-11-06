@@ -13,18 +13,22 @@
       "containerStatus": "FINISHED",
       "containerCreatedAt": "2026-11-06T13:04:16Z",
       "mediaId": "18115039691230827",
-      "publishedAt": "2026-11-06T13:04:46Z"
+      "publishedAt": "2026-11-06T13:04:46Z",
+      "permalink": "https://www.instagram.com/reel/DfZq9VCFVm1/"
     },
     "threads": {
       "status": "pending"
     }
   },
-  "log": "[16:07:31Z] 예약 시각 188분 초과 - 올리지 않음",
+  "log": [
+    "[16:07:31Z] 예약 시각 188분 초과 - 올리지 않음",
+    "[13:04:47Z] 인스타 게시 완료"
+  ],
   "mock": false,
   "resumes": 0,
   "error": null,
   "finishedAt": "2026-11-04T16:07:30Z",
-  "updatedAt": "2026-11-06T13:04:46Z",
+  "updatedAt": "2026-11-06T13:04:47Z",
   "startedAt": "2026-11-06T13:04:13Z",
   "startedAtKst": "2026-11-06T22:04:13",
   "runId": "42205554757-1"
