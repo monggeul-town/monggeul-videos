@@ -23,7 +23,8 @@
       "containerStatus": "FINISHED",
       "containerCreatedAt": "2026-11-06T13:01:15Z",
       "mediaId": "17961850119253644",
-      "publishedAt": "2026-11-06T13:01:52Z"
+      "publishedAt": "2026-11-06T13:01:52Z",
+      "permalink": "https://www.threads.com/@monggeul.town/post/DfZqnLRxX8v"
     }
   },
   "log": [
@@ -34,13 +35,14 @@
     "[16:07:27Z] 예약 시각 187분 초과 - 올리지 않음",
     "[10:49:31Z] 미리 와서 기다리는 중 (예약 2026-11-06T22:00:00 한국시간)",
     "[12:59:41Z] 미리 와서 기다렸다가 시각에 시작 (예약 시각 대비 -19초)",
-    "[13:01:13Z] 인스타 게시 완료"
+    "[13:01:13Z] 인스타 게시 완료",
+    "[13:01:53Z] 스레드 게시 완료"
   ],
   "mock": false,
   "resumes": 0,
   "error": null,
   "finishedAt": "2026-11-04T16:07:27Z",
-  "updatedAt": "2026-11-06T13:01:52Z",
+  "updatedAt": "2026-11-06T13:01:53Z",
   "waitingFor": "2026-11-06T22:00:00",
   "releasedAt": "2026-11-04T10:49:04Z",
   "startedAt": "2026-11-06T12:59:40Z",
