@@ -7,10 +7,10 @@
   "state": "running",
   "steps": {
     "instagram": {
-      "status": "running",
+      "status": "publishing",
       "error": null,
       "containerId": "17892196443528701",
-      "containerStatus": "IN_PROGRESS",
+      "containerStatus": "FINISHED",
       "containerCreatedAt": "2026-11-06T13:01:58Z"
     },
     "threads": {
@@ -25,7 +25,7 @@
   "resumes": 0,
   "error": null,
   "finishedAt": "2026-11-04T16:07:29Z",
-  "updatedAt": "2026-11-06T13:01:58Z",
+  "updatedAt": "2026-11-06T13:03:20Z",
   "startedAt": "2026-11-06T13:01:55Z",
   "startedAtKst": "2026-11-06T22:01:55",
   "runId": "42205554757-1"
