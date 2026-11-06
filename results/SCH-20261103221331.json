@@ -4,7 +4,7 @@
   "scheduleId": "SCH-20261103221331",
   "ep": "EP-036",
   "attempt": 2,
-  "state": "running",
+  "state": "done",
   "steps": {
     "instagram": {
       "status": "done",
@@ -30,13 +30,14 @@
   "log": [
     "[16:07:31Z] 예약 시각 188분 초과 - 올리지 않음",
     "[13:04:47Z] 인스타 게시 완료",
-    "[13:05:27Z] 스레드 게시 완료"
+    "[13:05:27Z] 스레드 게시 완료",
+    "[13:05:29Z] 끝: done"
   ],
   "mock": false,
   "resumes": 0,
   "error": null,
-  "finishedAt": "2026-11-04T16:07:30Z",
-  "updatedAt": "2026-11-06T13:05:27Z",
+  "finishedAt": "2026-11-06T13:05:28Z",
+  "updatedAt": "2026-11-06T13:05:29Z",
   "startedAt": "2026-11-06T13:04:13Z",
   "startedAtKst": "2026-11-06T22:04:13",
   "runId": "42205554757-1"
