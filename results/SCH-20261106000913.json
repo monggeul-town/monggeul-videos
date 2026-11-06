@@ -17,11 +17,13 @@
       "permalink": "https://www.instagram.com/reel/DfZrIYLjusU/"
     },
     "threads": {
-      "status": "publishing",
+      "status": "done",
       "error": null,
       "containerId": "18130561627818833",
       "containerStatus": "FINISHED",
-      "containerCreatedAt": "2026-11-06T13:07:04Z"
+      "containerCreatedAt": "2026-11-06T13:07:04Z",
+      "mediaId": "17911560582590347",
+      "publishedAt": "2026-11-06T13:07:41Z"
     }
   },
   "log": [
@@ -32,5 +34,5 @@
   "startedAt": "2026-11-06T13:05:29Z",
   "startedAtKst": "2026-11-06T22:05:29",
   "runId": "42205554757-1",
-  "updatedAt": "2026-11-06T13:07:35Z"
+  "updatedAt": "2026-11-06T13:07:41Z"
 }
