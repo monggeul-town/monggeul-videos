@@ -4,7 +4,7 @@
   "scheduleId": "SCH-20261106000913",
   "ep": "EP-038",
   "attempt": 1,
-  "state": "running",
+  "state": "done",
   "steps": {
     "instagram": {
       "status": "done",
@@ -29,12 +29,14 @@
   },
   "log": [
     "[13:07:02Z] 인스타 게시 완료",
-    "[13:07:43Z] 스레드 게시 완료"
+    "[13:07:43Z] 스레드 게시 완료",
+    "[13:07:44Z] 끝: done"
   ],
   "mock": false,
   "resumes": 0,
   "startedAt": "2026-11-06T13:05:29Z",
   "startedAtKst": "2026-11-06T22:05:29",
   "runId": "42205554757-1",
-  "updatedAt": "2026-11-06T13:07:43Z"
+  "updatedAt": "2026-11-06T13:07:44Z",
+  "finishedAt": "2026-11-06T13:07:44Z"
 }
