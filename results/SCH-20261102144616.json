@@ -3,8 +3,8 @@
   "executor": "cloud",
   "scheduleId": "SCH-20261102144616",
   "ep": "EP-034",
-  "attempt": 2,
-  "state": "missed",
+  "attempt": 3,
+  "state": "running",
   "steps": {},
   "log": [
     "[19:37:30Z] 예약 시각 397분 초과 - 올리지 않음",
@@ -12,10 +12,10 @@
   ],
   "mock": false,
   "resumes": 0,
-  "error": {
-    "friendly": "예약 시각보다 187분 늦게 확인돼서(60분 초과) 올리지 않았어요. 시간을 바꿔 다시 예약하거나 직접 올려 주세요.",
-    "message": "late"
-  },
+  "error": null,
   "finishedAt": "2026-11-04T16:07:29Z",
-  "updatedAt": "2026-11-04T16:07:29Z"
+  "updatedAt": "2026-11-06T13:01:56Z",
+  "startedAt": "2026-11-06T13:01:55Z",
+  "startedAtKst": "2026-11-06T22:01:55",
+  "runId": "42205554757-1"
 }
