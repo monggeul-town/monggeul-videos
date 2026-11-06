@@ -5,12 +5,23 @@
   "ep": "EP-038",
   "attempt": 1,
   "state": "running",
-  "steps": {},
+  "steps": {
+    "instagram": {
+      "status": "running",
+      "error": null,
+      "containerId": "17892197862528701",
+      "containerStatus": "IN_PROGRESS",
+      "containerCreatedAt": "2026-11-06T13:05:32Z"
+    },
+    "threads": {
+      "status": "pending"
+    }
+  },
   "log": [],
   "mock": false,
   "resumes": 0,
   "startedAt": "2026-11-06T13:05:29Z",
   "startedAtKst": "2026-11-06T22:05:29",
   "runId": "42205554757-1",
-  "updatedAt": "2026-11-06T13:05:30Z"
+  "updatedAt": "2026-11-06T13:05:32Z"
 }
