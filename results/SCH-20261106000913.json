@@ -17,7 +17,11 @@
       "permalink": "https://www.instagram.com/reel/DfZrIYLjusU/"
     },
     "threads": {
-      "status": "pending"
+      "status": "running",
+      "error": null,
+      "containerId": "18130561627818833",
+      "containerStatus": "IN_PROGRESS",
+      "containerCreatedAt": "2026-11-06T13:07:04Z"
     }
   },
   "log": [
@@ -28,5 +32,5 @@
   "startedAt": "2026-11-06T13:05:29Z",
   "startedAtKst": "2026-11-06T22:05:29",
   "runId": "42205554757-1",
-  "updatedAt": "2026-11-06T13:07:02Z"
+  "updatedAt": "2026-11-06T13:07:04Z"
 }
