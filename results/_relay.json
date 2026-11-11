@@ -2,12 +2,12 @@
   "shiftedNow": [],
   "recentShifts": [],
   "kind": "relay",
-  "runId": "42937665582-1",
+  "runId": "42971349071-1",
   "mode": "run",
   "wait": true,
   "reason": "handoff",
-  "startedAt": "2026-11-11T01:16:10Z",
-  "endedAt": "2026-11-11T06:17:06Z",
+  "startedAt": "2026-11-11T06:17:19Z",
+  "endedAt": "2026-11-11T11:18:25Z",
   "error": "",
   "dispatched": true,
   "delaySec": 0,
@@ -16,7 +16,7 @@
   "rereadMaxConsecutive": 0,
   "lastRereadError": "",
   "alert": false,
-  "runUrl": "https://github.com/monggeul-town/monggeul-videos/actions/runs/42937665582",
+  "runUrl": "https://github.com/monggeul-town/monggeul-videos/actions/runs/42971349071",
   "mock": false,
-  "updatedAt": "2026-11-11T06:17:06Z"
+  "updatedAt": "2026-11-11T11:18:25Z"
 }
